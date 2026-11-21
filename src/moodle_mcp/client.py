@@ -31,6 +31,11 @@ MAX_FILE_REDIRECTS = 5
 DOWNLOAD_ROOT = "~/Downloads/Moodle"
 DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024  # 1 GB
 UPLOAD_MAX_BYTES = 100 * 1024 * 1024
+FETCH_MAX_BYTES = 50 * 1024 * 1024  # files read into memory for their text
+ZIP_MAX_PARTS = 500  # slides in a .pptx
+ZIP_MAX_BYTES = 100 * 1024 * 1024  # total unpacked XML read from a .docx/.pptx/.xlsx
+PDF_MAX_PAGES = 1000
+TEXT_MAX_CHARS = 5_000_000
 
 # httpx logs every request URL at INFO, and file downloads carry the token in the query string.
 # FastMCP turns INFO logging on, so keep these loggers quiet.
@@ -217,7 +222,7 @@ class Moodle:
                 "No Moodle token configured. Run `moodle auth` in a terminal to add one.", "notoken"
             )
         # No automatic redirects: a redirected POST would replay wstoken to wherever Location points.
-        self.http = httpx.Client(timeout=60, follow_redirects=False,
+        self.http = httpx.Client(timeout=httpx.Timeout(connect=10, read=60, write=60, pool=10), follow_redirects=False,
                                  headers={"User-Agent": "moodle-mcp/0.1 (MoodleMobile)"})
         self._me: dict | None = None
 
@@ -617,7 +622,7 @@ class Moodle:
 
     def fetch_file(self, fileurl: str) -> tuple[bytes, str, str]:
         with closing(self._open_file(fileurl)) as r, self._net("file download"):
-            data = r.read()
+            data = _read_capped(r, FETCH_MAX_BYTES)
             ctype = r.headers.get("content-type", "")
         if "application/json" in ctype:
             _raise_if_moodle_error(data)
@@ -863,28 +868,65 @@ def _remaining(due: int) -> str:
 def extract_text(data: bytes, ctype: str, name: str) -> str:
     low = name.lower()
     if low.endswith(".pdf") or "pdf" in ctype:
-        from pypdf import PdfReader
-        reader = PdfReader(io.BytesIO(data))
-        return "\n\n".join(f"--- page {i + 1} ---\n{(pg.extract_text() or '').strip()}"
-                           for i, pg in enumerate(reader.pages))
+        return _guarded_extract(_pdf_text, data, name)
     if low.endswith((".docx", ".pptx", ".xlsx")):
-        z = zipfile.ZipFile(io.BytesIO(data))
-        if low.endswith(".docx"):
-            parts = ["word/document.xml"]
-        elif low.endswith(".pptx"):
-            parts = sorted((n for n in z.namelist() if re.match(r"ppt/slides/slide\d+\.xml$", n)),
-                           key=lambda n: int(re.search(r"(\d+)", n.rsplit("/", 1)[1]).group(1)))
-        else:
-            parts = ["xl/sharedStrings.xml"]
-        chunks = []
-        for i, part in enumerate(parts):
-            xml = z.read(part).decode("utf8", "ignore")
-            xml = re.sub(r"</w:p>|</a:p>|</si>", "\n", xml)
-            txt = re.sub(r"<[^>]+>", "", xml)
-            chunks.append((f"--- slide {i + 1} ---\n" if low.endswith(".pptx") else "") + txt.strip())
-        return "\n\n".join(chunks)
+        return _guarded_extract(_office_text, data, name)
     if "html" in ctype or low.endswith((".html", ".htm")):
         return html_to_text(data.decode("utf8", "ignore"))
     if ctype.startswith("text/") or low.endswith((".txt", ".md", ".c", ".h", ".py", ".java", ".csv", ".json", ".s")):
         return data.decode("utf8", "ignore")
     raise MoodleError(f"Can't extract text from {name} ({ctype}); use download instead.")
+
+
+def _guarded_extract(fn, data: bytes, name: str) -> str:
+    """Run a parser over an untrusted file; any parser failure becomes a plain MoodleError."""
+    try:
+        return fn(data, name)
+    except MoodleError:
+        raise
+    except Exception as e:
+        raise MoodleError(f"Couldn't read {name} ({type(e).__name__}); try download instead.", "badfile") from None
+
+
+def _pdf_text(data: bytes, name: str) -> str:
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(data))
+    chunks, total = [], 0
+    for i, pg in enumerate(reader.pages):
+        if i >= PDF_MAX_PAGES:
+            chunks.append(f"[stopped after {PDF_MAX_PAGES} pages]")
+            break
+        chunk = f"--- page {i + 1} ---\n{(pg.extract_text() or '').strip()}"
+        total += len(chunk)
+        chunks.append(chunk)
+        if total > TEXT_MAX_CHARS:
+            chunks.append(f"[stopped after {TEXT_MAX_CHARS:,} characters]")
+            break
+    return "\n\n".join(chunks)
+
+
+def _office_text(data: bytes, name: str) -> str:
+    low = name.lower()
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        if low.endswith(".docx"):
+            parts = ["word/document.xml"]
+        elif low.endswith(".pptx"):
+            parts = sorted((n for n in z.namelist() if re.match(r"ppt/slides/slide\d+\.xml$", n)),
+                           key=lambda n: int(re.search(r"(\d+)", n.rsplit("/", 1)[1]).group(1)))
+            if len(parts) > ZIP_MAX_PARTS:
+                raise MoodleError(f"{name} has more than {ZIP_MAX_PARTS} slides; download it instead.", "toolarge")
+        else:
+            parts = ["xl/sharedStrings.xml"]
+        chunks, budget = [], ZIP_MAX_BYTES
+        for i, part in enumerate(parts):
+            # Read at most budget+1 bytes: the sizes in the zip header can lie (zip bombs).
+            with z.open(part) as fh:
+                raw = fh.read(budget + 1)
+            budget -= len(raw)
+            if budget < 0:
+                raise MoodleError(f"{name} unpacks to more than {ZIP_MAX_BYTES // 2**20} MB; download it instead.",
+                                  "toolarge")
+            xml = re.sub(r"</w:p>|</a:p>|</si>", "\n", raw.decode("utf8", "ignore"))
+            txt = re.sub(r"<[^>]+>", "", xml)
+            chunks.append((f"--- slide {i + 1} ---\n" if low.endswith(".pptx") else "") + txt.strip())
+        return "\n\n".join(chunks)

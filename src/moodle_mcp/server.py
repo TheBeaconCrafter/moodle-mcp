@@ -26,6 +26,7 @@ mcp = FastMCP(
 _client: Moodle | None = None
 
 READ = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
+MAX_TEXT_SLICE = 100_000
 
 
 def m() -> Moodle:
@@ -116,12 +117,15 @@ def moodle_read(cmid: int) -> Any:
 @mcp.tool(annotations=READ)
 def moodle_file_text(fileurl: str, offset: int = 0, max_chars: int = 40000) -> Any:
     """Text of a Moodle file (PDF, DOCX, PPTX, XLSX strings, HTML, plain text) from a `fileurl` returned by
-    another tool. Long files come back in slices: call again with offset to continue."""
+    another tool. Long files come back in slices (max_chars 1-100000): call again with offset to continue."""
+    start = max(0, offset)
+    size = min(max(1, max_chars), MAX_TEXT_SLICE)
+
     def run():
         text = m().file_text(fileurl)
-        chunk = text[offset:offset + max_chars]
-        return {"total_chars": len(text), "offset": offset, "next_offset": offset + len(chunk)
-                if offset + len(chunk) < len(text) else None, "text": chunk}
+        chunk = text[start:start + size]
+        return {"total_chars": len(text), "offset": start, "next_offset": start + len(chunk)
+                if start + len(chunk) < len(text) else None, "text": chunk}
     return _guard(run)
 
 

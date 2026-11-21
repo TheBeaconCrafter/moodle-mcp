@@ -444,3 +444,84 @@ def test_save_config_failure_leaves_the_old_file(isolated_config, monkeypatch):
         mc.save_config({"url": SITE, "token": "b" * 32})
     assert mc.load_config()["token"] == "a" * 32
     assert len(list(isolated_config.parent.iterdir())) == 1
+
+
+# ---------------------------------------------------------------- resource limits
+
+
+def _zip(files):
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    return buf.getvalue()
+
+
+def test_fetch_file_is_capped(fake_moodle, monkeypatch):
+    monkeypatch.setattr(mc, "FETCH_MAX_BYTES", 10)
+    c = fake_moodle(_file_server(b"x" * 100))
+    with pytest.raises(mc.MoodleError) as e:
+        c.fetch_file(FILE)
+    assert e.value.code == "toolarge"
+
+
+def test_zip_bomb_is_stopped(monkeypatch):
+    monkeypatch.setattr(mc, "ZIP_MAX_BYTES", 1000)
+    bomb = _zip({"word/document.xml": "<w:t>" + "a" * 100_000 + "</w:t>"})
+    with pytest.raises(mc.MoodleError) as e:
+        mc.extract_text(bomb, "", "bomb.docx")
+    assert e.value.code == "toolarge"
+
+
+def test_too_many_slides_is_stopped(monkeypatch):
+    monkeypatch.setattr(mc, "ZIP_MAX_PARTS", 3)
+    deck = _zip({f"ppt/slides/slide{i}.xml": "<a:p>x</a:p>" for i in range(1, 5)})
+    with pytest.raises(mc.MoodleError):
+        mc.extract_text(deck, "", "deck.pptx")
+
+
+@pytest.mark.parametrize("data, name", [(b"not a zip", "x.docx"), (_zip({"other.xml": "x"}), "x.docx"),
+                                        (b"%PDF-1.4 garbage", "x.pdf")])
+def test_broken_files_become_moodle_errors(data, name):
+    with pytest.raises(mc.MoodleError) as e:
+        mc.extract_text(data, "", name)
+    assert e.value.code == "badfile"
+
+
+def test_pdf_page_cap(monkeypatch):
+    import io
+
+    from pypdf import PdfWriter
+
+    w = PdfWriter()
+    for _ in range(5):
+        w.add_blank_page(width=72, height=72)
+    buf = io.BytesIO()
+    w.write(buf)
+    monkeypatch.setattr(mc, "PDF_MAX_PAGES", 2)
+    text = mc.extract_text(buf.getvalue(), "application/pdf", "x.pdf")
+    assert "--- page 2 ---" in text and "--- page 3 ---" not in text and "stopped after 2 pages" in text
+
+
+def test_client_uses_split_timeouts():
+    t = mc.Moodle(url=SITE, token=TOKEN).http.timeout
+    assert (t.connect, t.read, t.write, t.pool) == (10, 60, 60, 10)
+
+
+@pytest.mark.parametrize("offset, max_chars, expect_offset, expect_len", [
+    (-5, 10, 0, 10), (0, 0, 0, 1), (0, -3, 0, 1), (0, 10**9, 0, 100_000), (999_999, 10, 999_999, 0)])
+def test_file_text_slices_are_clamped(monkeypatch, offset, max_chars, expect_offset, expect_len):
+    from moodle_mcp import server
+
+    class Fake:
+        token = TOKEN
+
+        def file_text(self, url):
+            return "x" * 200_000
+
+    monkeypatch.setattr(server, "_client", Fake())
+    out = server.moodle_file_text(FILE, offset, max_chars)
+    assert out["offset"] == expect_offset and len(out["text"]) == expect_len
