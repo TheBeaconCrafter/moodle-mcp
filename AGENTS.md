@@ -8,7 +8,7 @@ A Python package that exposes a student's Moodle account as MCP tools (stdio), p
 - `src/moodle_mcp/server.py`: FastMCP tools. Each tool is a thin wrapper, `return _guard(lambda: m().<method>(...))`, so client creation and every error (with the token redacted) stay inside the guard. `moodle-mcp --http` serves Streamable HTTP on 127.0.0.1 for OpenAI's Secure MCP Tunnel. Read-only tools use `annotations=READ`.
 - `src/moodle_mcp/cli.py`: argparse front end over the same client.
 - `tests/`: offline tests using `httpx.MockTransport`. They never need a real token.
-- `docs/extending.md`: the step-by-step for adding a tool.
+- `docs/extending.md`: the step-by-step for adding a tool. `docs/openai-tunnel.md`: ChatGPT via OpenAI's Secure MCP Tunnel, running it as a service, and staying signed in.
 
 ## Adding a tool
 

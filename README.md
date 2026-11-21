@@ -121,26 +121,16 @@ moodle-mcp is a standard stdio MCP server. Any client that can launch a local se
 <details>
 <summary><b>ChatGPT, Codex or the OpenAI API (Secure MCP Tunnel)</b></summary>
 
-OpenAI reaches local servers through [Secure MCP Tunnel](https://github.com/openai/tunnel-client): you run `tunnel-client` on your machine, it keeps an outbound connection to OpenAI, and nothing on your machine is opened to the internet. moodle-mcp works with both of its modes.
-
-**stdio**: tunnel-client starts `moodle-mcp` itself.
+ChatGPT can't start local programs, so OpenAI connects through [Secure MCP Tunnel](https://github.com/openai/tunnel-client): you run `tunnel-client` next to moodle-mcp, it keeps an outbound connection to OpenAI, and nothing on your machine is opened to the internet. The short version:
 
 ```bash
-tunnel-client init --profile moodle --tunnel-id tunnel_… --mcp-command "moodle-mcp"
+tunnel-client init --sample sample_mcp_stdio_local --profile moodle   --tunnel-id tunnel_… --mcp-command "moodle-mcp"
 tunnel-client run --profile moodle
 ```
 
-**Streamable HTTP**: you run the server, and tunnel-client forwards requests to it.
+Then, in ChatGPT, add a custom MCP server and choose **Tunnel** with your tunnel id. moodle-mcp also has a Streamable HTTP mode (`moodle-mcp --http`) for tunnel-client's HTTP option.
 
-```bash
-export MOODLE_MCP_HTTP_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-export MOODLE_MCP_AUTH_HEADER="Bearer $MOODLE_MCP_HTTP_TOKEN"
-moodle-mcp --http --port 8765            # listens on 127.0.0.1:8765/mcp only
-tunnel-client run --mcp.server-url http://127.0.0.1:8765/mcp \
-  --mcp.extra-headers "Authorization: env:MOODLE_MCP_AUTH_HEADER"
-```
-
-HTTP mode only listens on 127.0.0.1, rejects requests with a foreign `Host` header, and, when `MOODLE_MCP_HTTP_TOKEN` is set, rejects any request that lacks that bearer token. Check the exact `extra-headers` syntax against your tunnel-client version. In ChatGPT, add a custom MCP server and choose **Tunnel** with your tunnel id. Only one `tunnel-client` may run per tunnel id.
+**[docs/openai-tunnel.md](docs/openai-tunnel.md)** is the full setup guide. It covers both modes, running the tunnel as a service on Linux, macOS and Windows, and keeping moodle-mcp signed in for months.
 
 </details>
 
@@ -182,6 +172,8 @@ moodle download FILEURL [--to DIR]
 moodle news | notifications | search QUERY
 moodle functions [FILTER]             what your token can call
 moodle call WSFUNCTION '{"json": "params"}'
+moodle status                         is the sign-in still good? (exits 1 if not)
+moodle auth [--password [--remember]] sign in (token prompt, or Moodle password)
 moodle logout                         delete the saved token
 ```
 
@@ -282,13 +274,23 @@ In Claude Desktop, add `"args": ["--allow-writes"]` next to `"command"`. To go b
 
 | Problem | Fix |
 | --- | --- |
-| `invalidtoken`, or "the token is missing or expired" | Press Reset on the Security keys page and run `moodle auth` again |
+| `invalidtoken`, or "the token is missing or expired" | Press Reset on the Security keys page and run `moodle auth` again. Running servers pick up the new token without a restart. To stop this from happening, see [Staying signed in](#staying-signed-in) |
 | No *Moodle mobile web service* row on Security keys | Sign in to the Moodle phone app once, then refresh the page |
 | `moodle: command not found` | Run `uv tool update-shell` and open a new terminal |
 | Claude doesn't list the tools | Start a new session after adding the server. In Claude Desktop, use the full path to `moodle-mcp` |
 | `accessexception` on one tool | Your school has switched that function off. `moodle functions` shows what's allowed |
 | A file says it can't extract text | Use `moodle download` and open the file instead |
 | A tool returns a `readonly` error | The server is read-only by default. Restart it with `--allow-writes` (or `MOODLE_MCP_ALLOW_WRITES=1`) if you want Claude to submit or write |
+
+## Staying signed in
+
+Moodle tokens often expire after a few months. moodle-mcp copes in three ways:
+
+- **No restart needed.** When Moodle rejects the token, a running server re-reads the config, so `moodle auth` in a terminal fixes it on the spot.
+- **Early warning.** `moodle status` shows the token's age and exits 1 once it stops working, so you can run it from cron or Task Scheduler.
+- **Automatic renewal** on sites where you sign in to Moodle with a username and password (not SSO). Install the `keyring` extra and run `moodle auth --password --remember`. The password goes into your system keychain, and moodle-mcp fetches a new token by itself whenever the old one expires.
+
+[docs/openai-tunnel.md](docs/openai-tunnel.md#5-stay-signed-in) has the details, including headless servers and SSO sites.
 
 ## Other schools
 

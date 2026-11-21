@@ -2,7 +2,7 @@
 
 Most schools sign you in to Moodle with single sign-on (SSO), so there's no Moodle password this tool could use. It uses the same thing the official Moodle phone app uses instead: a **per-user web-service token**, about 32 letters and digits, tied to your account.
 
-Pick either method. Both end with `moodle auth`.
+Pick one method. Methods A and B work everywhere the Moodle app works; Method C (further down) is for sites without single sign-on. All of them end with `moodle auth`.
 
 ## Method A: Security keys page (easiest)
 
@@ -66,4 +66,15 @@ moodle logout    # deletes the file
 
 The token can do anything the Moodle app can do as you, including submitting work. Don't share it, commit it, or paste it into a chat. If you think it got out, press **Reset** on the Security keys page. The old token stops working immediately, and you run `moodle auth` with the new one.
 
-Tokens also expire on their own, often after a few months. When a tool says `invalidtoken`, repeat Method A.
+Tokens also expire on their own, often after a few months. When a tool says `invalidtoken`, repeat Method A. A server that's already running picks up the new token without a restart. `moodle status` tells you how old the token is.
+
+## Method C: Moodle username and password (sites without SSO)
+
+If you sign in to Moodle with a username and password that Moodle itself checks, rather than a Microsoft, Google or campus login page, you can skip the token hunt:
+
+```bash
+moodle auth --password             # asks for username and password; only the token is saved
+moodle auth --password --remember  # also keeps the password in your system keychain, so the token renews itself
+```
+
+`--remember` needs the optional keychain support: `uv tool install --force "moodle-mcp[keyring] @ git+https://github.com/TheBeaconCrafter/moodle-mcp"`. [openai-tunnel.md](openai-tunnel.md#5-stay-signed-in) covers headless servers without a keychain.
