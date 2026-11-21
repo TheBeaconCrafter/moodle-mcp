@@ -37,10 +37,48 @@ The sections below do the same by hand, and explain what the quickstart sets up.
 
 - moodle-mcp installed and signed in. `moodle whoami` should print your name ([Quick start](../README.md#quick-start)). On a machine that runs unattended, read [step 5](#5-stay-signed-in) before you sign in.
 - A ChatGPT plan that lets you add custom MCP servers (or an OpenAI API project, if you use the Responses API).
-- A **tunnel id** (`tunnel_…`) and the **API key** that goes with it, created on the OpenAI side. OpenAI's [help article on custom MCP servers](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt) and the [tunnel-client end-user guide](https://github.com/openai/tunnel-client/blob/master/docs/end-user-guide.md) explain where to create them.
+- A **tunnel id** (`tunnel_…`) and a **runtime API key** with Tunnels **Read** + **Use**, both from the OpenAI Platform. [The tunnel id and the runtime API key](#the-tunnel-id-and-the-runtime-api-key) explains what they are and how to set them up.
 - `tunnel-client` installed. `moodle tunnel install` does it for you (see [below](#installing-and-updating-tunnel-client)), or install it from its [releases page](https://github.com/openai/tunnel-client).
 
 Keep the tunnel API key the same way you keep your Moodle token: out of chats, repos and shell history. Put it in an environment file only you can read, as [step 4](#4-keep-it-running) does.
+
+### The tunnel id and the runtime API key
+
+You create both on the [OpenAI Platform](https://platform.openai.com), under your organization's settings. They're separate from your ChatGPT login.
+
+**The tunnel** is a record OpenAI keeps for one private connection. ChatGPT sends requests to the tunnel, and OpenAI hands them to whichever `tunnel-client` is signed in to it. Create it in [Tunnels](https://platform.openai.com/settings/organization/tunnels) and copy its id (`tunnel_…`). When you create it, attach your **ChatGPT workspace**, or it won't show up in ChatGPT's connector picker. A new tunnel takes 25–30 seconds before it's ready.
+
+**The runtime API key** is how `tunnel-client` proves to OpenAI that it may serve that tunnel. It only lets `tunnel-client` pick up requests for a tunnel and send the answers back. It doesn't give anyone access to your Moodle; that stays on your machine, behind moodle-mcp. Create it in [API keys](https://platform.openai.com/settings/organization/api-keys):
+
+1. Choose **Create new secret key**, then the **Restricted** permission type.
+2. Set **Tunnels** to **Read** and **Use**, and leave everything else at **None**. Don't pick **All**, and don't use an admin key: the key sits on disk for as long as the tunnel runs, so give it as little as possible.
+3. Copy the key. It starts with `sk-` and is shown only once.
+
+The **key's permissions aren't the whole story**: the person or service account that owns the key also needs Tunnels **Read** + **Use** through their role in the organization. In an organization you own, that's already the case. Elsewhere, an admin grants it under [Roles](https://platform.openai.com/settings/organization/people/roles) / [Groups](https://platform.openai.com/settings/organization/people/groups). Make a new key after the role changes.
+
+| Who / what | Needs | For |
+| --- | --- | --- |
+| The runtime API key | Restricted: Tunnels **Read** + **Use** | `tunnel-client run` and `doctor` |
+| The key's owner | Tunnels **Read** + **Use** (organization role) | the key to actually work |
+| Whoever creates the tunnel | Tunnels **Read** + **Manage** | creating and editing tunnel records |
+| Whoever adds the connector in ChatGPT | Tunnels **Read** + **Use** | picking the tunnel in ChatGPT |
+
+If you're the owner of your own organization, you're usually all four, and the only thing to get right is the Restricted key.
+
+**Where it's kept.** The quickstart saves the key to `~/.config/moodle-mcp/tunnel-runtime.key`, readable only by your user account. The tunnel profile points at that file (`api_key: file:…`), so the key never appears in a command line, a service file or an environment variable.
+
+**Changing it.** Create a new key, run `moodle quickstart` again and answer **No** to *Keep the runtime API key saved earlier?*, then revoke the old key on the API keys page. If the key leaks, revoke it first. A leaked runtime key can serve your tunnel, but it can't read your Moodle.
+
+**When it's wrong**, `tunnel-client doctor` or the service log says so:
+
+| Symptom | Likely cause |
+| --- | --- |
+| `401` from the control plane | The key was mistyped, revoked, or belongs to another organization |
+| `403` while running | The key, or its owner, lacks Tunnels **Use** for this tunnel |
+| The tunnel shows on the Platform but not in ChatGPT | The tunnel has no ChatGPT workspace attached, or the person adding the connector lacks Tunnels **Use** |
+| The tunnel can't be found or isn't ready | Wrong tunnel id, or the tunnel was created less than 30 seconds ago |
+
+OpenAI's [tunnel permissions guide](https://github.com/openai/tunnel-client/blob/master/docs/permissions.md) has the full details.
 
 ### Installing and updating tunnel-client
 
