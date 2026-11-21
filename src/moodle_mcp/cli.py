@@ -15,6 +15,7 @@ from .client import (
     MoodleError,
     check_site_url,
     clear_config,
+    config_lock,
     forget_password,
     load_config,
     parse_token,
@@ -81,10 +82,14 @@ def cmd_auth(args) -> None:
         sys.exit(redact(f"✗ Moodle rejected that token: {e}", token))
     except Exception as e:
         sys.exit(redact(f"✗ Couldn't check that token: {type(e).__name__}: {e}", token))
-    old = load_config()
-    if old.get("username") and old.get("username") != extra.get("username"):
-        forget_password(old.get("url", url), old["username"])
-    save_config({"url": url, "token": token, "saved_at": int(time.time()), **extra})
+    try:
+        with config_lock():
+            old = load_config()
+            if old.get("username") and old.get("username") != extra.get("username"):
+                forget_password(old.get("url", url), old["username"])
+            save_config({"url": url, "token": token, "saved_at": int(time.time()), **extra})
+    except MoodleError as e:
+        sys.exit(f"✗ {e}")
     print(f"✓ Signed in as {who['fullname']} ({who['username']}) on {who['site']}. "
           f"{who['functions_available']} web-service functions available.")
 
@@ -197,10 +202,15 @@ def main() -> None:
     if args.cmd == "auth":
         return cmd_auth(args)
     if args.cmd == "logout":
-        old = load_config()
-        if old.get("username"):
-            forget_password(old["url"], old["username"])
-        print(f"✓ Removed {CONFIG_PATH}" if clear_config() else "No saved token to remove.")
+        try:
+            with config_lock():
+                old = load_config()
+                if old.get("username"):
+                    forget_password(old["url"], old["username"])
+                removed = clear_config()
+        except MoodleError as e:
+            sys.exit(f"✗ {e}")
+        print(f"✓ Removed {CONFIG_PATH}" if removed else "No saved token to remove.")
         return
     if args.cmd == "status":
         return cmd_status(args)

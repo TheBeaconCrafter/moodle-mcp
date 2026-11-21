@@ -116,3 +116,80 @@ def test_status_exits_1_when_signed_out(monkeypatch, capsys):
         cli.main()
     assert e.value.code == 1
     assert "moodle auth" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- config lock and renewal races
+
+
+def _pw_file(tmp_path, monkeypatch):
+    pw = tmp_path / "pw"
+    pw.write_text(PASSWORD)
+    pw.chmod(0o600)
+    monkeypatch.setenv("MOODLE_MCP_PASSWORD_FILE", str(pw))
+
+
+def test_config_lock_is_exclusive_and_cleaned_up():
+    lock = mc.CONFIG_PATH.with_name(mc.CONFIG_PATH.name + ".lock")
+    with mc.config_lock():
+        assert lock.exists()
+        with pytest.raises(mc.MoodleError) as e:
+            with mc.config_lock(timeout=0.1):
+                pass
+        assert e.value.code == "locked"
+    assert not lock.exists()
+    with mc.config_lock(timeout=0.1):
+        pass
+
+
+def test_stale_config_lock_is_taken_over():
+    import os
+    import time
+
+    lock = mc.CONFIG_PATH.with_name(mc.CONFIG_PATH.name + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("12345")
+    old = time.time() - mc.LOCK_STALE_SECONDS - 5
+    os.utime(lock, (old, old))
+    with mc.config_lock(timeout=0.5):
+        pass
+    assert not lock.exists()
+
+
+def _racing_handler(on_login):
+    inner = _handler(NEW, [])
+
+    def handler(request):
+        if request.url.path.endswith("/login/token.php"):
+            on_login()
+        return inner(request)
+    return handler
+
+
+def test_renewal_does_not_overwrite_a_concurrent_moodle_auth(tmp_path, monkeypatch):
+    _pw_file(tmp_path, monkeypatch)
+    other = "c" * 32
+    mc.save_config({"url": URL, "token": OLD, "username": "s1", "remember": True})
+    # While the client signs in, the user runs `moodle auth` with another token.
+    c = _client(_racing_handler(lambda: mc.save_config({"url": URL, "token": other, "saved_at": 1})))
+    assert c.renew_token() is True
+    assert c.token == other
+    assert json.loads(mc.CONFIG_PATH.read_text())["token"] == other
+
+
+def test_renewal_does_not_undo_a_concurrent_logout(tmp_path, monkeypatch):
+    _pw_file(tmp_path, monkeypatch)
+    mc.save_config({"url": URL, "token": OLD, "username": "s1", "remember": True})
+    c = _client(_racing_handler(mc.clear_config))
+    assert c.renew_token() is False
+    assert not mc.CONFIG_PATH.exists() and c.token == OLD
+
+
+def test_renewal_does_not_write_while_another_process_holds_the_lock(tmp_path, monkeypatch):
+    _pw_file(tmp_path, monkeypatch)
+    monkeypatch.setattr(mc, "LOCK_TIMEOUT", 0.1)
+    mc.save_config({"url": URL, "token": OLD, "username": "s1", "remember": True})
+    lock = mc.CONFIG_PATH.with_name(mc.CONFIG_PATH.name + ".lock")
+    lock.write_text("1")
+    c = _client(_handler(NEW, []))
+    assert c.renew_token() is False
+    assert json.loads(mc.CONFIG_PATH.read_text())["token"] == OLD

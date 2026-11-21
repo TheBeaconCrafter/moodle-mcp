@@ -118,6 +118,61 @@ def check_site_url(url: str) -> str:
     return url
 
 
+def read_saved_config() -> dict | None:
+    """The config file exactly as saved (no environment overrides), or None if there is none or it's unreadable."""
+    try:
+        data = json.loads(CONFIG_PATH.read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+LOCK_TIMEOUT = 10.0
+LOCK_STALE_SECONDS = 60.0
+
+
+@contextmanager
+def config_lock(timeout: float | None = None):
+    """Hold a cross-process lock on the config file while reading-then-writing it.
+
+    The lock is a file next to the config created with O_CREAT|O_EXCL; a lock older than LOCK_STALE_SECONDS
+    is treated as left behind by a crashed process and taken over. Raises MoodleError("locked") after
+    `timeout` seconds (default LOCK_TIMEOUT)."""
+    folder = CONFIG_PATH.parent
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock = CONFIG_PATH.with_name(CONFIG_PATH.name + ".lock")
+    deadline = time.monotonic() + (LOCK_TIMEOUT if timeout is None else timeout)
+    while True:
+        try:
+            fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            try:
+                age = time.time() - lock.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            if age > LOCK_STALE_SECONDS:
+                # Move it aside first so two processes can't both decide to delete one fresh lock.
+                stale = lock.with_name(f"{lock.name}.{os.getpid()}.{os.urandom(4).hex()}.stale")
+                try:
+                    os.replace(lock, stale)
+                    stale.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
+            if time.monotonic() >= deadline:
+                raise MoodleError(f"Another moodle-mcp process is updating {CONFIG_PATH}; try again in a moment "
+                                  f"(or delete {lock} if nothing else is running).", "locked") from None
+            time.sleep(0.05)
+            continue
+        with os.fdopen(fd, "w") as fh:
+            fh.write(str(os.getpid()))
+        break
+    try:
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
 def clear_config() -> bool:
     if CONFIG_PATH.exists():
         CONFIG_PATH.unlink()
@@ -400,18 +455,32 @@ class Moodle:
         except httpx.HTTPError as e:
             raise MoodleError(redact(f"{what}: network error ({type(e).__name__}: {e})", self.token), "network") from None
 
-    def renew_token(self) -> bool:
-        """Swap an expired token for a working one without a restart. Returns True if the token changed:
-        either the config file now holds a different token (the user ran `moodle auth`), or a remembered
-        password got a new one from login/token.php (which is then saved)."""
-        if not self._renewable:
-            return False
+    def _adopt_saved_token(self) -> bool:
+        """Switch to the token in the config file if it belongs to this site and differs from ours."""
         cfg = load_config()
         if site_id(cfg.get("url")) != site_id(self.url):
             return False
         if cfg.get("token") and cfg["token"] != self.token:
             self.token, self._me = cfg["token"], None
             return True
+        return False
+
+    def renew_token(self) -> bool:
+        """Swap an expired token for a working one without a restart. Returns True if the token changed:
+        either the config file now holds a different token (the user ran `moodle auth`), or a remembered
+        password got a new one from login/token.php (which is then saved).
+
+        The sign-in happens without holding the config lock (it's a network call); the save then happens
+        under the lock and only if the file still holds the site, account and token we started from, so a
+        `moodle auth` or `moodle logout` that ran meanwhile is never overwritten or undone."""
+        if not self._renewable:
+            return False
+        if self._adopt_saved_token():
+            return True
+        cfg = load_config()
+        if site_id(cfg.get("url")) != site_id(self.url):
+            return False
+        start = read_saved_config()
         username = cfg.get("username")
         if not (cfg.get("remember") and username):
             return False
@@ -422,12 +491,28 @@ class Moodle:
             token = password_login(self.url, username, password, self.http)
         except MoodleError:
             return False
-        if token == self.token:
+        if token == self.token or start is None or site_id(start.get("url")) != site_id(self.url):
             return False
-        # Update the file itself (not the env-merged view) so env settings never get written to disk.
-        saved = json.loads(CONFIG_PATH.read_text()) if CONFIG_PATH.exists() else {}
-        saved.update(token=token, saved_at=int(time.time()))
-        save_config(saved)
+
+        def same(a: dict | None, b: dict) -> bool:
+            return (a is not None and site_id(a.get("url")) == site_id(b.get("url"))
+                    and a.get("username") == b.get("username") and a.get("token") == b.get("token"))
+
+        try:
+            with config_lock():
+                # Update the file itself (not the env-merged view) so env settings never get written to disk.
+                saved = read_saved_config()
+                if not same(saved, start):
+                    changed = True
+                else:
+                    changed = False
+                    saved.update(token=token, saved_at=int(time.time()))
+                    save_config(saved)
+        except MoodleError:
+            return False
+        if changed:
+            # Someone ran `moodle auth` or `moodle logout` while we signed in: their choice wins.
+            return self._adopt_saved_token()
         self.token, self._me = token, None
         return True
 
