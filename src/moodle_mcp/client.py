@@ -246,14 +246,37 @@ def remember_password(url: str, username: str, password: str) -> str:
     return "the system keychain"
 
 
+def _read_password_file(path: str) -> tuple[str | None, str | None]:
+    """(password, problem) for MOODLE_MCP_PASSWORD_FILE. On macOS/Linux the file must belong to this user and
+    give no access to group/other (chmod 600), checked with fstat on the opened file. Windows has no such mode
+    bits, so there the file relies on the folder's ACLs (keep it in your profile folder)."""
+    try:
+        fd = os.open(Path(path).expanduser(), os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    except OSError as e:
+        return None, f"MOODLE_MCP_PASSWORD_FILE can't be opened ({type(e).__name__})."
+    with os.fdopen(fd, "rb") as fh:
+        if os.name != "nt":
+            st = os.fstat(fh.fileno())
+            if st.st_uid != os.getuid():
+                return None, "MOODLE_MCP_PASSWORD_FILE belongs to another user; refusing to use it."
+            if st.st_mode & 0o077:
+                return None, ("MOODLE_MCP_PASSWORD_FILE is accessible to other users; refusing to use it. "
+                              "Run: chmod 600 on that file.")
+        text = fh.read(64 * 1024).decode("utf-8", "replace").strip()
+    return (text or None), (None if text else "MOODLE_MCP_PASSWORD_FILE is empty.")
+
+
+def password_file_problem() -> str | None:
+    """Why MOODLE_MCP_PASSWORD_FILE (if set) can't be used, or None when it's fine or not set."""
+    path = os.environ.get("MOODLE_MCP_PASSWORD_FILE", "").strip()
+    return _read_password_file(path)[1] if path else None
+
+
 def recall_password(url: str, username: str) -> str | None:
     """The remembered password: MOODLE_MCP_PASSWORD_FILE first (handy for systemd credentials), then the keychain."""
     path = os.environ.get("MOODLE_MCP_PASSWORD_FILE", "").strip()
     if path:
-        try:
-            return Path(path).expanduser().read_text(encoding="utf-8").strip() or None
-        except OSError:
-            return None
+        return _read_password_file(path)[0]
     kr = _keyring()
     if kr is None:
         return None
@@ -582,6 +605,11 @@ class Moodle:
         if cfg.get("saved_at") and cfg.get("token") == self.token:
             info["token_age_days"] = int((time.time() - cfg["saved_at"]) // 86400)
         info["auto_renew"] = bool(self._renewable and cfg.get("remember") and cfg.get("username"))
+        if info["auto_renew"]:
+            problem = password_file_problem()
+            if problem:
+                info["auto_renew"] = False
+                info["auto_renew_problem"] = problem
         return info
 
     def has_function(self, name: str) -> bool:

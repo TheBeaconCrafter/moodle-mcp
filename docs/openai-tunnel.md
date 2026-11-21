@@ -258,6 +258,8 @@ Environment=MOODLE_MCP_PASSWORD_FILE=%h/.config/moodle-mcp/password
 
 Then sign in once with `MOODLE_MCP_PASSWORD_FILE=~/.config/moodle-mcp/password moodle auth --password --remember`. With the variable set, nothing is written to a keychain.
 
+On macOS and Linux, moodle-mcp refuses a password file that belongs to another user or that group/other can read or write (anything looser than `chmod 600`); `moodle status` says why auto-renew is off. Windows has no such permission bits, so there it isn't checked: keep the file inside your user profile folder. `moodle logout` never deletes this file, because you manage it.
+
 > [!IMPORTANT]
 > A remembered password is worth more to an attacker than a token, which you can reset from the Security keys page. Only use auto-renew on a machine you trust, and leave the server read-only.
 

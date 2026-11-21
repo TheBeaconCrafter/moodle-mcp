@@ -20,6 +20,7 @@ from .client import (
     forget_password,
     load_config,
     parse_token,
+    password_file_problem,
     password_login,
     read_saved_config,
     redact,
@@ -63,6 +64,9 @@ def cmd_auth(args) -> None:
         except MoodleError as e:
             sys.exit(redact(f"✗ {e}", password))
         if args.remember:
+            problem = password_file_problem()
+            if problem:
+                sys.exit(f"✗ {problem}")
             try:
                 where = remember_password(url, username, password)
             except MoodleError as e:
@@ -139,8 +143,12 @@ def cmd_status(args) -> None:
     age = who.get("token_age_days")
     print(f"✓ Signed in as {who['fullname']} on {who['site']}.")
     print(f"  Token saved {age} days ago." if age is not None else "  Token age unknown (saved before moodle-mcp tracked it).")
-    print("  Auto-renew: on (remembered password)." if who.get("auto_renew") else
-          "  Auto-renew: off. When the token expires, run `moodle auth` again; running servers pick it up.")
+    if who.get("auto_renew"):
+        print("  Auto-renew: on (remembered password).")
+    elif who.get("auto_renew_problem"):
+        print(f"  Auto-renew: off. {who['auto_renew_problem']}")
+    else:
+        print("  Auto-renew: off. When the token expires, run `moodle auth` again; running servers pick it up.")
 
 
 def _print(obj) -> None:

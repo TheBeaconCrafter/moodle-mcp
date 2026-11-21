@@ -1,6 +1,7 @@
 """Staying signed in: picking up a new token from the config file, and renewing with a remembered password."""
 
 import json
+import os
 
 import httpx
 import pytest
@@ -47,6 +48,7 @@ def test_running_client_picks_up_a_new_token_from_moodle_auth():
 def test_remembered_password_renews_an_expired_token(tmp_path, monkeypatch):
     pw = tmp_path / "pw"
     pw.write_text(PASSWORD)
+    pw.chmod(0o600)
     monkeypatch.setenv("MOODLE_MCP_PASSWORD_FILE", str(pw))
     mc.save_config({"url": URL, "token": OLD, "username": "s1", "remember": True, "saved_at": 0})
     logins = []
@@ -106,6 +108,7 @@ def test_password_login_errors_never_echo_the_password():
 def test_password_file_wins_over_keyring(tmp_path, monkeypatch):
     pw = tmp_path / "pw"
     pw.write_text(PASSWORD + "\n")
+    pw.chmod(0o600)
     monkeypatch.setenv("MOODLE_MCP_PASSWORD_FILE", str(pw))
     assert mc.recall_password(URL, "s1") == PASSWORD
 
@@ -243,6 +246,7 @@ def test_logout_reports_a_keychain_failure(monkeypatch, capsys):
 def test_logout_mentions_the_password_file_is_kept(tmp_path, monkeypatch, capsys):
     pw = tmp_path / "pw"
     pw.write_text(PASSWORD)
+    pw.chmod(0o600)
     monkeypatch.setenv("MOODLE_MCP_PASSWORD_FILE", str(pw))
     monkeypatch.setattr(mc, "_keyring", lambda: None)
     mc.save_config({"url": URL, "token": OLD, "username": "s1", "remember": True})
@@ -257,3 +261,46 @@ def test_forget_password_statuses(monkeypatch):
     assert mc.forget_password(URL, "s1") == "absent"
     monkeypatch.setattr(mc, "_keyring", lambda: _FakeKeyring({("moodle-mcp", f"{URL}|s1"): "x"}))
     assert mc.forget_password(URL, "s1") == "deleted"
+
+
+# ---------------------------------------------------------------- password file permissions
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("mode", [0o644, 0o640, 0o604, 0o660])
+def test_password_file_readable_by_others_is_refused(tmp_path, monkeypatch, mode):
+    pw = tmp_path / "pw"
+    pw.write_text(PASSWORD)
+    pw.chmod(mode)
+    monkeypatch.setenv("MOODLE_MCP_PASSWORD_FILE", str(pw))
+    assert mc.recall_password(URL, "s1") is None
+    assert "chmod 600" in mc.password_file_problem()
+    pw.chmod(0o600)
+    assert mc.recall_password(URL, "s1") == PASSWORD and mc.password_file_problem() is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_status_explains_a_bad_password_file(tmp_path, monkeypatch, capsys):
+    pw = tmp_path / "pw"
+    pw.write_text(PASSWORD)
+    pw.chmod(0o644)
+    monkeypatch.setenv("MOODLE_MCP_PASSWORD_FILE", str(pw))
+    mc.save_config({"url": URL, "token": NEW, "username": "s1", "remember": True})
+    handler = _handler(NEW, [])
+    real_init = mc.Moodle.__init__
+
+    def init(self, *a, **k):
+        real_init(self, *a, **k)
+        self.http = httpx.Client(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(mc.Moodle, "__init__", init)
+    monkeypatch.setattr("sys.argv", ["moodle", "status"])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "Auto-renew: off" in out and "chmod 600" in out
+
+
+def test_missing_password_file_is_a_problem_not_a_crash(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOODLE_MCP_PASSWORD_FILE", str(tmp_path / "nope"))
+    assert mc.recall_password(URL, "s1") is None
+    assert "can't be opened" in mc.password_file_problem()
