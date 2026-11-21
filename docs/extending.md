@@ -12,7 +12,7 @@ This walkthrough adds `moodle_upcoming`, which returns everything on the Moodle 
 ## 0. Run from your clone
 
 ```bash
-git clone https://github.com/ralstonraphael/moodle-mcp && cd moodle-mcp
+git clone https://github.com/TheBeaconCrafter/moodle-mcp && cd moodle-mcp
 uv tool install --force --editable .
 ```
 

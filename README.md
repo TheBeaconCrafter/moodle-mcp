@@ -1,9 +1,12 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="moodle-mcp: ask Claude what's due, read course files, check grades" width="100%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
+    <img src="assets/banner-light.svg" alt="moodle-mcp: your Moodle account as tools Claude can use" width="100%">
+  </picture>
 </p>
 
 <p align="center">
-  <a href="https://github.com/ralstonraphael/moodle-mcp/actions/workflows/ci.yml"><img src="https://github.com/ralstonraphael/moodle-mcp/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/TheBeaconCrafter/moodle-mcp/actions/workflows/ci.yml"><img src="https://github.com/TheBeaconCrafter/moodle-mcp/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/MCP-stdio%20server-F98012" alt="MCP stdio server">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22c55e" alt="MIT license"></a>
@@ -55,7 +58,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 ### 1. Install
 
 ```bash
-uv tool install git+https://github.com/ralstonraphael/moodle-mcp
+uv tool install git+https://github.com/TheBeaconCrafter/moodle-mcp
 ```
 
 This installs two commands, `moodle` for you and `moodle-mcp` for Claude. If your shell then says `command not found`, run `uv tool update-shell` and open a new terminal.
@@ -219,7 +222,7 @@ Each request is a POST to Moodle's [web-service API](https://docs.moodle.org/dev
 To add a tool, clone the repo and install it in editable mode so your commands run the code you're changing:
 
 ```bash
-git clone https://github.com/ralstonraphael/moodle-mcp && cd moodle-mcp
+git clone https://github.com/TheBeaconCrafter/moodle-mcp && cd moodle-mcp
 uv tool install --force --editable .
 
 moodle functions calendar                # 1. find an API function
@@ -270,6 +273,10 @@ moodle auth --url https://moodle.yourschool.edu
 ```
 
 Your school's Moodle has to allow the mobile app, so if the Moodle phone app signs you in, this will work too. Setting the `MOODLE_URL` and `MOODLE_TOKEN` environment variables works in place of `moodle auth`.
+
+## Credits
+
+moodle-mcp was created by [@ralstonraphael](https://github.com/ralstonraphael). The original project lives at [ralstonraphael/moodle-mcp](https://github.com/ralstonraphael/moodle-mcp). This fork adds an HTTP transport for OpenAI's Secure MCP Tunnel, security fixes and new artwork.
 
 ## License
 

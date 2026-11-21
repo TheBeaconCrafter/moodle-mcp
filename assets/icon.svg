@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="moodle-mcp">
+  <rect width="256" height="256" rx="58" fill="#F98012"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M58 186 V118 a30 30 0 0 1 60 0 V186"/>
+    <path d="M118 118 a30 30 0 0 1 60 0 V150"/>
+  </g>
+  <rect x="160" y="146" width="36" height="30" rx="7" fill="#FFFFFF"/>
+  <g stroke="#FFFFFF" stroke-width="9" stroke-linecap="round">
+    <path d="M170 178 V196"/>
+    <path d="M186 178 V196"/>
+  </g>
+</svg>
