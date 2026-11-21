@@ -259,7 +259,7 @@ moodle-mcp starts read-only, so nothing Claude does (or a page or file tries to 
 
 - every reading tool works as usual, and `moodle_download` still saves files into `~/Downloads/Moodle`;
 - `moodle_submit_assignment` returns a `readonly` error instead of touching your submission;
-- `moodle_call` runs read-only functions only.
+- `moodle_call` only runs functions whose names look read-only: a `get`/`search`/`list`/`count` (or `check`/`can`/`is`/`has`) function from a standard Moodle component, with no write word in the name. `*_view_*` functions, `local_*` plugins, unknown components and a few getters known to change state are refused. This check goes by the function's name, so it is a best-effort guard rather than a promise about what a site's code does.
 
 To turn writes on, start the server with `--allow-writes` or set `MOODLE_MCP_ALLOW_WRITES=1`:
 

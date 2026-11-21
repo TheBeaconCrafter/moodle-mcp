@@ -927,30 +927,66 @@ def _dest_dir(dest: str, root: str | None) -> Path:
 
 _READ_VERBS = {"get", "search", "list", "count", "check", "can", "is", "has"}
 _PREDICATE_VERBS = {"check", "can", "is", "has"}  # yes/no questions such as mod_forum_can_add_discussion
-# Words that mean a write even after a read verb (get_..._and_save would be odd, but be safe).
+# Words that mean a write anywhere in the name, even after a read verb (get_..._and_save would be odd, but be safe).
+# "read" is deliberately not here: Moodle's mark-as-read functions use "mark", and "read" shows up in getters.
 _WRITE_WORDS = {"add", "create", "update", "delete", "remove", "save", "submit", "set", "send", "mark", "edit",
                 "insert", "upload", "import", "reset", "lock", "unlock", "grant", "revoke", "toggle", "process",
                 "start", "finish", "accept", "decline", "confirm", "copy", "move", "duplicate", "restore", "approve",
-                "reject", "change", "enable", "disable", "block", "unblock", "mute", "unmute", "star", "unstar"}
+                "reject", "change", "enable", "disable", "block", "unblock", "mute", "unmute", "star", "unstar",
+                "trigger", "log", "join", "launch", "record", "notify", "subscribe", "unsubscribe", "complete",
+                "purge", "clear", "viewed"}
 # Functions that hand out credentials (e.g. tool_mobile_get_autologin_key) are never "read-only" here.
 _CREDENTIAL_WORDS = {"token", "tokens", "autologin", "key", "keys", "password", "session"}
+# Standard Moodle plugin types (plus core). local_* and anything unknown is refused in read-only mode: a site's
+# own plugins can name a write however they like.
+_KNOWN_COMPONENTS = {
+    "core", "mod", "tool", "block", "gradereport", "report", "message", "enrol", "auth", "qbank", "qtype",
+    "assignsubmission", "assignfeedback", "booktool", "quizaccess", "theme", "format", "filter", "editor",
+    "availability", "customfield", "aiplacement", "ai", "h5plib", "contenttype", "repository", "gradingform",
+    "ltiservice",
+}
+# Getters known (or, where noted, believed) to change state despite their names.
+_STATEFUL_GETTERS = {
+    "mod_quiz_get_attempt_data",  # moves the attempt's current page and logs an "attempt viewed" event
+    "mod_quiz_process_attempt",  # saves answers / finishes the attempt (also caught by "process")
+    "core_message_get_messages",  # markasread=1 marks the returned messages as read
+    "mod_lesson_get_page_data",  # believed to record lesson progress/timer for the page; not fully certain
+    "mod_scorm_insert_scorm_tracks",  # writes SCORM tracking data (also caught by "insert")
+}
 
 
 def is_read_only_function(wsfunction: str) -> bool:
-    """Best-effort check that a web-service function only reads.
+    """Best-effort guess, from the name alone, that a web-service function only reads.
 
-    Moodle names functions <component>_<verb>_<thing>, where the component is one or two words
-    (core_get_string, core_course_get_contents, mod_assign_get_assignments). The verb must be a read
-    verb (get/search/list/count, or a check/can/is/has question), no word may name a credential, and
-    get/search/list/count functions may not contain a write word either. *_view_* functions count as
-    writes: they log a view and can tick activity completion."""
+    This is a name check, not a guarantee: read-only mode can only promise that moodle_call refuses names
+    that look like writes. Moodle names functions <component>_<verb>_<thing>, where the component is one or
+    two words (core_get_string, core_course_get_contents, mod_assign_get_assignments). The rules:
+    the component must be a standard Moodle plugin type (no local_* or unknown types); the verb must be a
+    read verb (get/search/list/count, or a check/can/is/has question); no word may name a credential or a
+    write (for can_<action> questions the action word itself is allowed); "view" anywhere but at the end
+    counts as a write (*_view_* functions log a view and can tick activity completion); and a short list of
+    getters known to change state is refused."""
     if not re.fullmatch(r"[a-z][a-z0-9]*(_[a-z0-9]+)+", wsfunction or ""):
         return False
-    words = wsfunction.split("_")
-    verb = words[1] if words[1] in _READ_VERBS else words[2] if len(words) > 2 and words[2] in _READ_VERBS else None
-    if verb is None or set(words) & _CREDENTIAL_WORDS:
+    if wsfunction in _STATEFUL_GETTERS:
         return False
-    return verb in _PREDICATE_VERBS or not (set(words) & _WRITE_WORDS)
+    words = wsfunction.split("_")
+    if words[0] not in _KNOWN_COMPONENTS:
+        return False
+    if words[1] in _READ_VERBS:
+        vi = 1
+    elif len(words) > 2 and words[2] in _READ_VERBS:
+        vi = 2
+    else:
+        return False
+    if set(words) & _CREDENTIAL_WORDS:
+        return False
+    if "view" in words[:-1]:
+        return False
+    checked = list(words)
+    if words[vi] == "can" and vi + 1 < len(words):
+        del checked[vi + 1]  # mod_forum_can_add_discussion asks whether adding is allowed; it doesn't add
+    return not (set(checked) & _WRITE_WORDS)
 
 
 def upload_roots() -> list[Path]:

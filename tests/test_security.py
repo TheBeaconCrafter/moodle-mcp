@@ -329,6 +329,8 @@ def test_upload_roots_default_to_home(monkeypatch):
     "gradereport_user_get_grade_items", "message_popup_get_popup_notifications", "core_course_search_courses",
     "core_competency_list_course_competencies", "mod_forum_can_add_discussion", "core_search_get_relevant_users",
     "core_message_get_unread_conversations_count", "core_calendar_get_calendar_upcoming_view",
+    "core_calendar_get_calendar_monthly_view", "core_course_check_updates", "tool_mobile_get_config",
+    "mod_quiz_get_attempt_review", "mod_quiz_get_user_attempts", "core_message_get_conversation_messages",
 ])
 def test_read_only_functions_are_recognised(fn):
     assert mc.is_read_only_function(fn)
@@ -340,6 +342,15 @@ def test_read_only_functions_are_recognised(fn):
     "mod_quiz_start_attempt", "mod_page_view_page", "core_message_mark_all_notifications_as_read",
     "tool_mobile_get_autologin_key", "core_user_set_user_preferences", "core_get_and_delete_thing",
     "", "get", "Core_Course_Get_Contents", "core_course_get_contents;rm", "mod_assign_get_x_y_z_save",
+    # predicates get the write-word check too
+    "core_course_check_and_delete", "mod_forum_is_x_removed_and_delete", "mod_forum_can_add_and_delete",
+    # *_view_* in the verb slot, even after a subsystem that looks like a read verb
+    "core_search_view_results", "core_search_get_view_and_more",
+    # unknown or site-specific components
+    "local_x_check_and_delete", "local_reports_get_data", "mycompany_course_get_contents", "x_get_y",
+    # known state-changing getters
+    "mod_quiz_get_attempt_data", "core_message_get_messages", "mod_lesson_get_page_data",
+    "mod_scorm_insert_scorm_tracks", "mod_bigbluebuttonbn_get_join_url", "core_course_get_and_trigger_event",
 ])
 def test_writes_and_junk_are_not_read_only(fn):
     assert not mc.is_read_only_function(fn)

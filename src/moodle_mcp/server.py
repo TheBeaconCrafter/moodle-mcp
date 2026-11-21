@@ -202,10 +202,11 @@ def moodle_functions(match: str | None = None) -> Any:
 def moodle_call(wsfunction: str, params: dict | None = None) -> Any:
     """Escape hatch: call a Moodle web-service function the token allows when no dedicated tool fits, e.g.
     wsfunction='mod_quiz_get_quizzes_by_courses', params={'courseids': [123]}. Nested params are fine.
-    Only read-only functions run by default (<component>_get_/search_/list_/count_/check_/can_/is_/has_…);
-    anything else, including *_view_* functions, returns a 'readonly' error unless the server was started
-    with --allow-writes. Even then, treat a write like a submission: show the user the exact function and
-    params and get a clear yes first."""
+    By default only names that look read-only run (<component>_get_/search_/list_/count_/check_/can_/is_/has_…
+    from a standard Moodle component, with no write word). This is a best-effort check of the name only:
+    *_view_* functions, local_* plugins, unknown components and a few getters known to change state all return
+    a 'readonly' error unless the server was started with --allow-writes. Even then, treat a write like a
+    submission: show the user the exact function and params and get a clear yes first."""
     def run():
         if not is_read_only_function(wsfunction):
             _require_writes(f"Calling {wsfunction} (it doesn't look read-only)")
