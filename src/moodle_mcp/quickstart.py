@@ -321,9 +321,18 @@ def step_tunnel_client(ui: UI) -> Path:
 
 
 def step_openai(ui: UI, paths: Paths) -> str:
-    ui.info("You need a [bold]tunnel id[/] and a [bold]runtime API key[/] from the OpenAI platform:\n"
-            f"  • Tunnels:          {TUNNELS_URL}\n"
-            f"  • Runtime API keys: {API_KEYS_URL}")
+    ui.info("You need two things from the OpenAI Platform (not your ChatGPT login):\n\n"
+            "[bold]1. A tunnel[/]: OpenAI's record for this private connection.\n"
+            "   Create it on the Tunnels page and attach your [bold]ChatGPT workspace[/],\n"
+            "   so it shows up in ChatGPT. Then copy its id (tunnel_…).\n\n"
+            "[bold]2. A runtime API key[/]: lets tunnel-client serve that tunnel.\n"
+            "   It can't read your Moodle. Create it on the API keys page:\n"
+            "   choose [bold]Restricted[/], set [bold]Tunnels: Read + Use[/], everything else None.\n"
+            "   Not an \"All\" key, not an admin key. Your account itself also needs\n"
+            "   Tunnels Read + Use (organization owners have it).\n\n"
+            f"  Tunnels:  {TUNNELS_URL}\n"
+            f"  API keys: {API_KEYS_URL}\n"
+            "[dim]  More: docs/openai-tunnel.md → \"The tunnel id and the runtime API key\"[/]")
     if ui.confirm("Open those pages in your browser?", default=False):
         webbrowser.open(TUNNELS_URL)
         webbrowser.open(API_KEYS_URL)
