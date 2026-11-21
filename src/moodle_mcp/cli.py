@@ -145,6 +145,12 @@ def cmd_assignments(args, c: Moodle) -> None:
 
 
 def main() -> None:
+    # ✓/✗ can't be encoded on a Windows console code page when output is piped; degrade instead of crashing.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     p = argparse.ArgumentParser(prog="moodle", description="Talk to Moodle from the terminal.")
     p.add_argument("--json", action="store_true", help="raw JSON output")
     sub = p.add_subparsers(dest="cmd", required=True)
