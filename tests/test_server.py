@@ -105,7 +105,10 @@ def test_http_mode_refuses_to_start_without_a_strong_token(monkeypatch, capsys, 
     with pytest.raises(SystemExit) as e:
         server.main(["--http"])
     assert e.value.code == 2 and runs == []
-    assert "MOODLE_MCP_HTTP_TOKEN" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "MOODLE_MCP_HTTP_TOKEN" in err
+    # The suggested command must create the token file private from the start, like docs/openai-tunnel.md.
+    assert "install -d -m 700 ~/.config/moodle-mcp" in err and "(umask 077; python -c" in err
 
 
 def test_http_mode_starts_with_a_token_or_explicit_no_auth(monkeypatch, capsys):

@@ -246,8 +246,9 @@ def _bearer_guard(app, token: str):
 
 HTTP_TOKEN_MIN_CHARS = 16
 HTTP_TOKEN_HELP = (
-    "Create one and keep it in a file only you can read, for example:\n"
-    "  python -c \"import secrets; print(secrets.token_urlsafe(32))\" > ~/.config/moodle-mcp/http-token\n"
+    "Create one and keep it in a file only you can read, for example (macOS/Linux):\n"
+    "  install -d -m 700 ~/.config/moodle-mcp\n"
+    "  (umask 077; python -c \"import secrets; print(secrets.token_urlsafe(32))\" > ~/.config/moodle-mcp/http-token)\n"
     "then start the server with MOODLE_MCP_HTTP_TOKEN set to its contents and send it as "
     "'Authorization: Bearer <token>'. See docs/openai-tunnel.md (Option B)."
 )
