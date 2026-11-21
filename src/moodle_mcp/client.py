@@ -317,10 +317,17 @@ def fmt_time(ts: int | None) -> str | None:
 
 
 FLATTEN_MAX_DEPTH = 10
+_PARAM_NAME = re.compile(r"[A-Za-z0-9_]+")
+# Names the client sets itself. PHP trims and decodes parameter names (" wsfunction", "ws.function" and
+# "wsfunction" can all land on $_POST['wsfunction']), so only plain identifiers are accepted and these are refused.
+_RESERVED_PARAMS = {"wstoken", "wsfunction", "moodlewsrestformat"}
 
 
 def _flatten(prefix: str, value: Any, out: dict, depth: int = 0) -> None:
-    """Moodle REST wants nested params as courseids[0]=1&options[0][name]=x."""
+    """Moodle REST wants nested params as courseids[0]=1&options[0][name]=x.
+
+    Every dict key at every level must be a plain identifier ([A-Za-z0-9_]+), and the top level may not use
+    the names the client sets itself (wstoken, wsfunction, moodlewsrestformat, moodlewssetting*)."""
     if depth > FLATTEN_MAX_DEPTH:
         raise MoodleError(f"Parameters are nested more than {FLATTEN_MAX_DEPTH} levels deep.", "badparams")
     if isinstance(value, dict):
@@ -328,6 +335,10 @@ def _flatten(prefix: str, value: Any, out: dict, depth: int = 0) -> None:
             k = str(k)
             if "[" in k or "]" in k:
                 raise MoodleError(f"Parameter names can't contain [ or ]: {k!r}. Nest dicts/lists instead.", "badparams")
+            if not _PARAM_NAME.fullmatch(k):
+                raise MoodleError(f"Parameter names may only use letters, digits and _: {k!r}.", "badparams")
+            if not prefix and (k.lower() in _RESERVED_PARAMS or k.lower().startswith("moodlewssetting")):
+                raise MoodleError(f"{k!r} is set by moodle-mcp itself and can't be passed as a parameter.", "badparams")
             _flatten(f"{prefix}[{k}]" if prefix else k, v, out, depth + 1)
     elif isinstance(value, (list, tuple)):
         for i, v in enumerate(value):

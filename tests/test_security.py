@@ -566,6 +566,33 @@ def test_flatten_rejects_bracketed_keys(params):
     assert e.value.code == "badparams"
 
 
+@pytest.mark.parametrize("params", [
+    {" wsfunction": "mod_assign_save_submission"}, {"wsfunction": "x"}, {"ws.function": "x"}, {"WSTOKEN": "x"},
+    {"wsToken": "x"}, {"moodlewsrestformat": "xml"}, {"moodlewssettingfilter": 1}, {"MoodleWSSettingRaw": 1},
+    {"courseid\x00": 1}, {"a-b": 1}, {"options": [{"na me": "x"}]}, {"options": {"wsfunction ": "x"}}, {"": 1},
+])
+def test_flatten_rejects_reserved_and_non_identifier_keys(params):
+    with pytest.raises(mc.MoodleError) as e:
+        mc._flatten("", params, {})
+    assert e.value.code == "badparams"
+
+
+def test_flatten_allows_reserved_words_nested_below_the_top():
+    out = {}
+    mc._flatten("", {"options": [{"name": "wsfunction", "value": 1}], "courseid": 3}, out)
+    assert out == {"options[0][name]": "wsfunction", "options[0][value]": 1, "courseid": 3}
+
+
+def test_moodle_call_cannot_smuggle_a_second_wsfunction(monkeypatch, fake_moodle):
+    seen = []
+    c = fake_moodle(lambda req: seen.append(req) or httpx.Response(200, json={}))
+    monkeypatch.setattr(server, "_client", c)
+    monkeypatch.delenv("MOODLE_MCP_ALLOW_WRITES", raising=False)
+    monkeypatch.setattr(server, "_allow_writes", False)
+    out = server.moodle_call("core_course_get_contents", {" wsfunction": "mod_assign_save_submission", "courseid": 1})
+    assert out["errorcode"] == "badparams" and seen == []
+
+
 def test_flatten_caps_depth():
     deep = 1
     for _ in range(mc.FLATTEN_MAX_DEPTH + 2):
