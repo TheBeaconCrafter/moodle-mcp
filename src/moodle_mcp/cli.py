@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import sys
 import time
 
@@ -20,6 +21,7 @@ from .client import (
     load_config,
     parse_token,
     password_login,
+    read_saved_config,
     redact,
     remember_password,
     save_config,
@@ -92,6 +94,31 @@ def cmd_auth(args) -> None:
         sys.exit(f"✗ {e}")
     print(f"✓ Signed in as {who['fullname']} ({who['username']}) on {who['site']}. "
           f"{who['functions_available']} web-service functions available.")
+
+
+def cmd_logout(args) -> None:
+    """Delete the saved config and the keychain password for the account in the file itself (never the
+    MOODLE_URL / MOODLE_TOKEN view of it, which may point at another site)."""
+    status = None
+    try:
+        with config_lock():
+            saved = read_saved_config() or {}
+            if saved.get("url") and saved.get("username"):
+                status = forget_password(saved["url"], saved["username"])
+            removed = clear_config()
+    except MoodleError as e:
+        sys.exit(f"✗ {e}")
+    print(f"✓ Removed {CONFIG_PATH}" if removed else "No saved token to remove.")
+    if status == "deleted":
+        print("✓ Removed the remembered password from the system keychain.")
+    elif status == "failed":
+        print("! Couldn't remove the remembered password from the system keychain. Delete the "
+              "'moodle-mcp' entry in your keychain / credential manager by hand.", file=sys.stderr)
+    elif status == "nokeyring" and saved.get("remember"):
+        print("! The keyring package isn't installed, so a password remembered earlier couldn't be checked. "
+              "Look for a 'moodle-mcp' entry in your keychain / credential manager.", file=sys.stderr)
+    if os.environ.get("MOODLE_MCP_PASSWORD_FILE", "").strip():
+        print("Note: MOODLE_MCP_PASSWORD_FILE is a file you manage yourself; it was not deleted.")
 
 
 def cmd_status(args) -> None:
@@ -202,16 +229,7 @@ def main() -> None:
     if args.cmd == "auth":
         return cmd_auth(args)
     if args.cmd == "logout":
-        try:
-            with config_lock():
-                old = load_config()
-                if old.get("username"):
-                    forget_password(old["url"], old["username"])
-                removed = clear_config()
-        except MoodleError as e:
-            sys.exit(f"✗ {e}")
-        print(f"✓ Removed {CONFIG_PATH}" if removed else "No saved token to remove.")
-        return
+        return cmd_logout(args)
     if args.cmd == "status":
         return cmd_status(args)
     c = None

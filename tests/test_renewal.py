@@ -193,3 +193,67 @@ def test_renewal_does_not_write_while_another_process_holds_the_lock(tmp_path, m
     c = _client(_handler(NEW, []))
     assert c.renew_token() is False
     assert json.loads(mc.CONFIG_PATH.read_text())["token"] == OLD
+
+
+# ---------------------------------------------------------------- logout
+
+
+class _FakeKeyring:
+    class errors:
+        class PasswordDeleteError(Exception):
+            pass
+
+    def __init__(self, store=None, broken=False):
+        self.store = dict(store or {})
+        self.broken = broken
+        self.deleted = []
+
+    def delete_password(self, service, key):
+        if self.broken:
+            raise RuntimeError("locked keychain")
+        if (service, key) not in self.store:
+            raise self.errors.PasswordDeleteError(key)
+        del self.store[(service, key)]
+        self.deleted.append(key)
+
+
+def _logout(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["moodle", "logout"])
+    cli.main()
+
+
+def test_logout_uses_the_saved_site_not_moodle_url(monkeypatch, capsys):
+    kr = _FakeKeyring({("moodle-mcp", f"{URL}/Moodle|s1"): PASSWORD})
+    monkeypatch.setattr(mc, "_keyring", lambda: kr)
+    mc.save_config({"url": URL + "/Moodle", "token": OLD, "username": "s1", "remember": True})
+    monkeypatch.setenv("MOODLE_URL", "https://other.example.org")
+    _logout(monkeypatch)
+    assert kr.deleted == [f"{URL}/Moodle|s1"] and not mc.CONFIG_PATH.exists()
+    assert "keychain" in capsys.readouterr().out
+
+
+def test_logout_reports_a_keychain_failure(monkeypatch, capsys):
+    monkeypatch.setattr(mc, "_keyring", lambda: _FakeKeyring(broken=True))
+    mc.save_config({"url": URL, "token": OLD, "username": "s1", "remember": True})
+    _logout(monkeypatch)
+    assert "Couldn't remove" in capsys.readouterr().err
+    assert not mc.CONFIG_PATH.exists()
+
+
+def test_logout_mentions_the_password_file_is_kept(tmp_path, monkeypatch, capsys):
+    pw = tmp_path / "pw"
+    pw.write_text(PASSWORD)
+    monkeypatch.setenv("MOODLE_MCP_PASSWORD_FILE", str(pw))
+    monkeypatch.setattr(mc, "_keyring", lambda: None)
+    mc.save_config({"url": URL, "token": OLD, "username": "s1", "remember": True})
+    _logout(monkeypatch)
+    assert "not deleted" in capsys.readouterr().out and pw.exists()
+
+
+def test_forget_password_statuses(monkeypatch):
+    monkeypatch.setattr(mc, "_keyring", lambda: None)
+    assert mc.forget_password(URL, "s1") == "nokeyring"
+    monkeypatch.setattr(mc, "_keyring", lambda: _FakeKeyring())
+    assert mc.forget_password(URL, "s1") == "absent"
+    monkeypatch.setattr(mc, "_keyring", lambda: _FakeKeyring({("moodle-mcp", f"{URL}|s1"): "x"}))
+    assert mc.forget_password(URL, "s1") == "deleted"

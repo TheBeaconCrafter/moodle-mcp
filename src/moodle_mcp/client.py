@@ -263,13 +263,26 @@ def recall_password(url: str, username: str) -> str | None:
         return None
 
 
-def forget_password(url: str, username: str) -> None:
+def forget_password(url: str, username: str) -> str:
+    """Delete a remembered password from the OS keychain.
+
+    Returns "deleted", "absent" (nothing stored), "nokeyring" (keyring isn't installed) or "failed"."""
     kr = _keyring()
-    if kr is not None:
+    if kr is None:
+        return "nokeyring"
+    not_found = getattr(getattr(kr, "errors", None), "PasswordDeleteError", ())
+    # Also the key format from before site_id() (whole URL lowercased), so upgrades don't leave it behind.
+    keys = {_keyring_user(url, username), f"{str(url).rstrip('/').lower()}|{username}"}
+    deleted = failed = False
+    for key in keys:
         try:
-            kr.delete_password(KEYRING_SERVICE, _keyring_user(url, username))
-        except Exception:
+            kr.delete_password(KEYRING_SERVICE, key)
+            deleted = True
+        except not_found:
             pass
+        except Exception:
+            failed = True
+    return "failed" if failed else "deleted" if deleted else "absent"
 
 
 def password_login(url: str, username: str, password: str, http: httpx.Client | None = None) -> str:
