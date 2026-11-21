@@ -112,6 +112,32 @@ moodle-mcp is a standard stdio MCP server. Any client that can launch a local se
 
 </details>
 
+<details>
+<summary><b>ChatGPT, Codex or the OpenAI API (Secure MCP Tunnel)</b></summary>
+
+OpenAI reaches local servers through [Secure MCP Tunnel](https://github.com/openai/tunnel-client): you run `tunnel-client` on your machine, it keeps an outbound connection to OpenAI, and nothing on your machine is opened to the internet. moodle-mcp works with both of its modes.
+
+**stdio**: tunnel-client starts `moodle-mcp` itself.
+
+```bash
+tunnel-client init --profile moodle --tunnel-id tunnel_… --mcp-command "moodle-mcp"
+tunnel-client run --profile moodle
+```
+
+**Streamable HTTP**: you run the server, and tunnel-client forwards requests to it.
+
+```bash
+export MOODLE_MCP_HTTP_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export MOODLE_MCP_AUTH_HEADER="Bearer $MOODLE_MCP_HTTP_TOKEN"
+moodle-mcp --http --port 8765            # listens on 127.0.0.1:8765/mcp only
+tunnel-client run --mcp.server-url http://127.0.0.1:8765/mcp \
+  --mcp.extra-headers "Authorization: env:MOODLE_MCP_AUTH_HEADER"
+```
+
+HTTP mode only listens on 127.0.0.1, rejects requests with a foreign `Host` header, and, when `MOODLE_MCP_HTTP_TOKEN` is set, rejects any request that lacks that bearer token. Check the exact `extra-headers` syntax against your tunnel-client version. In ChatGPT, add a custom MCP server and choose **Tunnel** with your tunnel id. Only one `tunnel-client` may run per tunnel id.
+
+</details>
+
 ## Tools
 
 | Tool | What it does |

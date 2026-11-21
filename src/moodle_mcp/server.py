@@ -163,8 +163,55 @@ def moodle_call(wsfunction: str, params: dict | None = None) -> Any:
     return _guard(m().call, wsfunction, **(params or {}))
 
 
-def main() -> None:
-    mcp.run()
+def _bearer_guard(app, token: str):
+    """Wrap an ASGI app so every HTTP request must carry `Authorization: Bearer <token>`."""
+    import hmac
+
+    expected = f"Bearer {token}".encode()
+
+    async def guarded(scope, receive, send):
+        if scope["type"] == "http":
+            got = dict(scope.get("headers") or []).get(b"authorization", b"")
+            if not hmac.compare_digest(got, expected):
+                await send({"type": "http.response.start", "status": 401,
+                            "headers": [(b"content-type", b"text/plain"), (b"www-authenticate", b"Bearer")]})
+                await send({"type": "http.response.body", "body": b"unauthorized"})
+                return
+        await app(scope, receive, send)
+
+    return guarded
+
+
+def serve_http(port: int = 8765, path: str = "/mcp") -> None:
+    """Serve MCP over Streamable HTTP on 127.0.0.1 only (for tunnels such as OpenAI's Secure MCP Tunnel).
+
+    If MOODLE_MCP_HTTP_TOKEN is set, requests must send it as a bearer token."""
+    import os
+
+    import uvicorn
+
+    mcp.settings.port = port
+    mcp.settings.streamable_http_path = path
+    mcp.settings.stateless_http = True
+    app = mcp.streamable_http_app()
+    token = os.environ.get("MOODLE_MCP_HTTP_TOKEN", "").strip()
+    if token:
+        app = _bearer_guard(app, token)
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+
+
+def main(argv: list[str] | None = None) -> None:
+    import argparse
+
+    p = argparse.ArgumentParser(prog="moodle-mcp", description="Moodle MCP server (stdio by default).")
+    p.add_argument("--http", action="store_true", help="serve Streamable HTTP on 127.0.0.1 instead of stdio")
+    p.add_argument("--port", type=int, default=8765, help="HTTP port (default 8765)")
+    p.add_argument("--path", default="/mcp", help="HTTP endpoint path (default /mcp)")
+    a = p.parse_args(argv)
+    if a.http:
+        serve_http(a.port, a.path)
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":
