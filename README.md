@@ -128,7 +128,7 @@ tunnel-client init --sample sample_mcp_stdio_local --profile moodle   --tunnel-i
 tunnel-client run --profile moodle
 ```
 
-Then, in ChatGPT, add a custom MCP server and choose **Tunnel** with your tunnel id. moodle-mcp also has a Streamable HTTP mode (`moodle-mcp --http`) for tunnel-client's HTTP option.
+Then, in ChatGPT, add a custom MCP server and choose **Tunnel** with your tunnel id. moodle-mcp also has a Streamable HTTP mode (`moodle-mcp --http`) for tunnel-client's HTTP option. It only starts with a shared secret in `MOODLE_MCP_HTTP_TOKEN` (16+ characters; the guide shows how to make one), or with an explicit `--no-auth`.
 
 **[docs/openai-tunnel.md](docs/openai-tunnel.md)** is the full setup guide. It covers both modes, running the tunnel as a service on Linux, macOS and Windows, and keeping moodle-mcp signed in for months.
 
@@ -265,7 +265,7 @@ To turn writes on, start the server with `--allow-writes` or set `MOODLE_MCP_ALL
 
 ```bash
 claude mcp add -s user moodle -- moodle-mcp --allow-writes     # Claude Code
-moodle-mcp --http --allow-writes                               # HTTP / OpenAI tunnel
+moodle-mcp --http --allow-writes      # HTTP / OpenAI tunnel (needs MOODLE_MCP_HTTP_TOKEN)
 ```
 
 In Claude Desktop, add `"args": ["--allow-writes"]` next to `"command"`. To go back to read-only, remove the flag (or the variable) and restart the session. Writes are best left off unless you're about to submit something.

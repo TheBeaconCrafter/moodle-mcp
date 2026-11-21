@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from moodle_mcp import server
 
 WRITES = {"moodle_submit_assignment", "moodle_call", "moodle_download"}
@@ -86,3 +88,34 @@ def test_moodle_call_passes_params_through_without_name_clashes(monkeypatch):
 def test_instructions_mark_moodle_content_as_untrusted():
     text = server.mcp.instructions or ""
     assert "untrusted" in text and "moodle_call" in text
+
+
+def _no_uvicorn(monkeypatch):
+    import uvicorn
+
+    runs = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: runs.append(kw))
+    return runs
+
+
+@pytest.mark.parametrize("token", ["", "short-secret"])
+def test_http_mode_refuses_to_start_without_a_strong_token(monkeypatch, capsys, token):
+    runs = _no_uvicorn(monkeypatch)
+    monkeypatch.setenv("MOODLE_MCP_HTTP_TOKEN", token)
+    with pytest.raises(SystemExit) as e:
+        server.main(["--http"])
+    assert e.value.code == 2 and runs == []
+    assert "MOODLE_MCP_HTTP_TOKEN" in capsys.readouterr().err
+
+
+def test_http_mode_starts_with_a_token_or_explicit_no_auth(monkeypatch, capsys):
+    runs = _no_uvicorn(monkeypatch)
+    monkeypatch.setenv("MOODLE_MCP_HTTP_TOKEN", "x" * 32)
+    server.main(["--http"])
+    assert runs and runs[-1]["host"] == "127.0.0.1"
+    monkeypatch.delenv("MOODLE_MCP_HTTP_TOKEN")
+    server.main(["--http", "--no-auth"])
+    assert len(runs) == 2 and "WITHOUT authentication" in capsys.readouterr().err
+    monkeypatch.setenv("MOODLE_MCP_HTTP_TOKEN", "short")
+    with pytest.raises(SystemExit):
+        server.main(["--http", "--no-auth"])

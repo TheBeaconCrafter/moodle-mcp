@@ -63,7 +63,7 @@ tunnel-client run --profile moodle \
   --mcp.extra-headers "Authorization: env:MOODLE_MCP_AUTH_HEADER"
 ```
 
-In HTTP mode moodle-mcp listens on 127.0.0.1 only, rejects requests whose `Host` header isn't local, and, when `MOODLE_MCP_HTTP_TOKEN` is set, rejects any request without that bearer token. Run `moodle-mcp --http --help` to see every option.
+In HTTP mode moodle-mcp listens on 127.0.0.1 only, rejects requests whose `Host` header isn't local, and rejects any request without the `MOODLE_MCP_HTTP_TOKEN` bearer token. It won't start without that token (at least 16 characters), because any program on the machine could otherwise use your Moodle account through it. `--no-auth` overrides that, but only use it if nothing else runs on the machine. Run `moodle-mcp --http --help` to see every option.
 
 Check the `--mcp.extra-headers` value against your tunnel-client version. If requests come back `401 unauthorized`, the header isn't arriving.
 

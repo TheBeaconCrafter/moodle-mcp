@@ -233,19 +233,50 @@ def _bearer_guard(app, token: str):
     return guarded
 
 
-def serve_http(port: int = 8765, path: str = "/mcp") -> None:
+HTTP_TOKEN_MIN_CHARS = 16
+HTTP_TOKEN_HELP = (
+    "Create one and keep it in a file only you can read, for example:\n"
+    "  python -c \"import secrets; print(secrets.token_urlsafe(32))\" > ~/.config/moodle-mcp/http-token\n"
+    "then start the server with MOODLE_MCP_HTTP_TOKEN set to its contents and send it as "
+    "'Authorization: Bearer <token>'. See docs/openai-tunnel.md (Option B)."
+)
+
+
+def _http_auth_problem(token: str, no_auth: bool) -> str | None:
+    """Why HTTP mode must not start with this token setting, or None if it may."""
+    if token and len(token) < HTTP_TOKEN_MIN_CHARS:
+        return (f"moodle-mcp --http: MOODLE_MCP_HTTP_TOKEN is shorter than {HTTP_TOKEN_MIN_CHARS} characters, "
+                f"which is too easy to guess.\n{HTTP_TOKEN_HELP}")
+    if not token and not no_auth:
+        return ("moodle-mcp --http needs a shared secret: any program on this machine (including web pages "
+                "reaching 127.0.0.1) could otherwise act as you on Moodle. Set MOODLE_MCP_HTTP_TOKEN "
+                f"(at least {HTTP_TOKEN_MIN_CHARS} characters), or pass --no-auth if you really mean to run "
+                f"without one.\n{HTTP_TOKEN_HELP}")
+    return None
+
+
+def serve_http(port: int = 8765, path: str = "/mcp", no_auth: bool = False) -> None:
     """Serve MCP over Streamable HTTP on 127.0.0.1 only (for tunnels such as OpenAI's Secure MCP Tunnel).
 
-    If MOODLE_MCP_HTTP_TOKEN is set, requests must send it as a bearer token."""
+    Requests must send MOODLE_MCP_HTTP_TOKEN (at least 16 characters) as a bearer token. Without it the
+    server refuses to start unless no_auth (--no-auth) is set explicitly."""
+    import sys
+
+    token = os.environ.get("MOODLE_MCP_HTTP_TOKEN", "").strip()
+    problem = _http_auth_problem(token, no_auth)
+    if problem:
+        print(problem, file=sys.stderr)
+        raise SystemExit(2)
     import uvicorn
 
     mcp.settings.port = port
     mcp.settings.streamable_http_path = path
     mcp.settings.stateless_http = True
     app = mcp.streamable_http_app()
-    token = os.environ.get("MOODLE_MCP_HTTP_TOKEN", "").strip()
     if token:
         app = _bearer_guard(app, token)
+    else:
+        print("moodle-mcp --http: running WITHOUT authentication (--no-auth).", file=sys.stderr)
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 
@@ -258,11 +289,13 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--path", default="/mcp", help="HTTP endpoint path (default /mcp)")
     p.add_argument("--allow-writes", action="store_true",
                    help="let tools write to Moodle (submit assignments, moodle_call writes); read-only by default")
+    p.add_argument("--no-auth", action="store_true",
+                   help="with --http: allow running without MOODLE_MCP_HTTP_TOKEN (not recommended)")
     a = p.parse_args(argv)
     global _allow_writes
     _allow_writes = a.allow_writes
     if a.http:
-        serve_http(a.port, a.path)
+        serve_http(a.port, a.path, no_auth=a.no_auth)
     else:
         mcp.run()
 
