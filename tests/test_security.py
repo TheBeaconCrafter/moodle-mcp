@@ -110,3 +110,53 @@ def test_file_redirect_loop_stops(fake_moodle):
 def test_httpx_request_logging_is_silenced():
     assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
     assert logging.getLogger("httpcore").getEffectiveLevel() >= logging.WARNING
+
+
+# ---------------------------------------------------------------- error redaction
+
+
+def test_redact_strips_the_token_and_token_params():
+    text = f"GET https://x/pluginfile.php/1/a.pdf?forcedownload=1&token={TOKEN} wstoken=abc123&x=1 {TOKEN}"
+    out = mc.redact(text, TOKEN)
+    assert TOKEN not in out and "abc123" not in out
+    assert "forcedownload=1" in out and "token=***" in out and "wstoken=***" in out
+
+
+def test_network_errors_become_redacted_moodle_errors(fake_moodle):
+    def handler(req):
+        raise httpx.ConnectError(f"boom while fetching {req.url}", request=req)
+
+    c = fake_moodle(handler)
+    for go in (lambda: c.fetch_file(FILE), lambda: c.call("core_webservice_get_site_info")):
+        with pytest.raises(mc.MoodleError) as e:
+            go()
+        assert e.value.code == "network"
+        assert TOKEN not in str(e.value)
+
+
+def test_http_status_errors_do_not_echo_the_url(fake_moodle):
+    c = fake_moodle(lambda req: httpx.Response(500))
+    for go in (lambda: c.fetch_file(FILE), lambda: c.call("core_webservice_get_site_info")):
+        with pytest.raises(mc.MoodleError) as e:
+            go()
+        assert "500" in str(e.value) and TOKEN not in str(e.value)
+
+
+def test_non_json_rest_answer_is_a_moodle_error(fake_moodle):
+    c = fake_moodle(lambda req: httpx.Response(200, text="<html>login</html>"))
+    with pytest.raises(mc.MoodleError) as e:
+        c.call("core_webservice_get_site_info")
+    assert e.value.code == "badresponse"
+
+
+def test_call_params_may_use_any_key_name(fake_moodle):
+    seen = {}
+
+    def handler(req):
+        from urllib.parse import parse_qs
+        seen.update({k: v[0] for k, v in parse_qs(req.content.decode()).items()})
+        return httpx.Response(200, json={})
+
+    c = fake_moodle(handler)
+    c.call("core_x_get_y", fn=1, self=2, params=3)
+    assert seen["fn"] == "1" and seen["self"] == "2" and seen["wsfunction"] == "core_x_get_y"

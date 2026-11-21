@@ -79,12 +79,12 @@ In `src/moodle_mcp/server.py`:
 def moodle_upcoming(course_id: int | None = None) -> Any:
     """Events on the Moodle calendar's Upcoming view (due dates, class sessions, course events).
     Pass course_id to limit it to one course."""
-    return _guard(m().upcoming_events, course_id)
+    return _guard(lambda: m().upcoming_events(course_id))
 ```
 
 - **The docstring is the interface.** Claude picks tools by reading it, so say what the tool returns and when to use it.
 - `annotations=READ` marks the tool read-only. For anything that writes, use `ToolAnnotations(readOnlyHint=False, destructiveHint=True, ...)` and tell Claude in the docstring to confirm with the user first.
-- `_guard` turns `MoodleError` into an `{"error": ...}` result so Claude can see what went wrong.
+- `_guard` runs the lambda and turns any error into an `{"error": ...}` result, with the token scrubbed out, so Claude can see what went wrong. Pass a lambda rather than `m().method` so that a missing config is caught too.
 
 ## 5. Try it
 

@@ -7,7 +7,17 @@ import getpass
 import json
 import sys
 
-from .client import CONFIG_PATH, DEFAULT_URL, Moodle, MoodleError, clear_config, load_config, parse_token, save_config
+from .client import (
+    CONFIG_PATH,
+    DEFAULT_URL,
+    Moodle,
+    MoodleError,
+    clear_config,
+    load_config,
+    parse_token,
+    redact,
+    save_config,
+)
 
 AUTH_HELP = """\
 Most schools sign you in to Moodle through single sign-on, so there's no password to give this tool.
@@ -39,7 +49,9 @@ def cmd_auth(args) -> None:
     try:
         who = Moodle(url=url, token=token).whoami()
     except MoodleError as e:
-        sys.exit(f"✗ Moodle rejected that token: {e}")
+        sys.exit(redact(f"✗ Moodle rejected that token: {e}", token))
+    except Exception as e:
+        sys.exit(redact(f"✗ Couldn't check that token: {type(e).__name__}: {e}", token))
     save_config({"url": url, "token": token})
     print(f"✓ Signed in as {who['fullname']} ({who['username']}) on {who['site']}. "
           f"{who['functions_available']} web-service functions available.")
@@ -121,6 +133,7 @@ def main() -> None:
     if args.cmd == "logout":
         print(f"✓ Removed {CONFIG_PATH}" if clear_config() else "No saved token to remove.")
         return
+    c = None
     try:
         c = Moodle()
         if args.cmd == "due":
@@ -152,7 +165,9 @@ def main() -> None:
         elif args.cmd == "call":
             _print(c.call(args.wsfunction, **json.loads(args.params)))
     except MoodleError as e:
-        sys.exit(f"✗ {e}")
+        sys.exit(redact(f"✗ {e}", c.token if c else None))
+    except Exception as e:  # print a one-line, token-free error instead of a traceback
+        sys.exit(redact(f"✗ {type(e).__name__}: {e}", c.token if c else None))
 
 
 if __name__ == "__main__":

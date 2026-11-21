@@ -16,7 +16,7 @@ import os
 import re
 import time
 import zipfile
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -39,6 +39,17 @@ class MoodleError(RuntimeError):
     def __init__(self, message: str, code: str | None = None):
         super().__init__(message)
         self.code = code
+
+
+_TOKEN_PARAM = re.compile(r"((?:ws)?token=)[^&\s'\"<>]+", re.IGNORECASE)
+
+
+def redact(text: str, token: str | None = None) -> str:
+    """Strip a token from text meant for a person or a model: the literal value and any token=/wstoken= param."""
+    text = str(text)
+    if token:
+        text = text.replace(token, "***")
+    return _TOKEN_PARAM.sub(lambda m: m.group(1) + "***", text)
 
 
 # ---------------------------------------------------------------- config
@@ -172,16 +183,29 @@ class Moodle:
         self._me: dict | None = None
 
     # -- raw ------------------------------------------------------------
-    def call(self, wsfunction: str, **params) -> Any:
+    @contextmanager
+    def _net(self, what: str = "Moodle"):
+        """Turn httpx network errors into MoodleError with the token scrubbed (httpx messages include URLs)."""
+        try:
+            yield
+        except httpx.HTTPError as e:
+            raise MoodleError(redact(f"{what}: network error ({type(e).__name__}: {e})", self.token), "network") from None
+
+    def call(self, wsfunction: str, /, **params) -> Any:
         data: dict = {}
         _flatten("", params, data)
         data.update(wstoken=self.token, wsfunction=wsfunction, moodlewsrestformat="json")
-        r = self.http.post(f"{self.url}/webservice/rest/server.php", data=data)
+        with self._net(wsfunction):
+            r = self.http.post(f"{self.url}/webservice/rest/server.php", data=data)
         if r.is_redirect:
             raise MoodleError(f"{wsfunction}: Moodle answered with a redirect (HTTP {r.status_code}). "
                               "Check the site URL (https, www, sub-path).", "redirect")
-        r.raise_for_status()
-        out = r.json() if r.content else None
+        if r.status_code >= 400:
+            raise MoodleError(f"{wsfunction}: Moodle returned HTTP {r.status_code}.", "httperror")
+        try:
+            out = r.json() if r.content else None
+        except ValueError:
+            raise MoodleError(f"{wsfunction}: Moodle did not answer with JSON. Check the site URL.", "badresponse") from None
         if isinstance(out, dict) and "exception" in out:
             code = out.get("errorcode")
             msg = out.get("message", "Moodle error")
@@ -537,7 +561,8 @@ class Moodle:
         Redirects are followed by hand, at most MAX_FILE_REDIRECTS times and only within the same site."""
         url = self._file_url(fileurl)
         for _ in range(MAX_FILE_REDIRECTS + 1):
-            r = self.http.send(self.http.build_request("GET", url), stream=True)
+            with self._net("file download"):
+                r = self.http.send(self.http.build_request("GET", url), stream=True)
             if r.is_redirect:
                 location = r.headers.get("location", "")
                 r.close()
@@ -552,11 +577,14 @@ class Moodle:
         raise MoodleError("The file download redirected too many times.", "redirect")
 
     def fetch_file(self, fileurl: str) -> tuple[bytes, str, str]:
-        with closing(self._open_file(fileurl)) as r:
+        with closing(self._open_file(fileurl)) as r, self._net("file download"):
             data = r.read()
             ctype = r.headers.get("content-type", "")
         if "application/json" in ctype and data[:1] == b"{":
-            err = json.loads(data)
+            try:
+                err = json.loads(data)
+            except ValueError:
+                err = {}
             raise MoodleError(err.get("error") or err.get("message") or "File download failed", err.get("errorcode"))
         name = unquote(Path(urlparse(fileurl).path).name)
         return data, ctype, name
@@ -576,14 +604,18 @@ class Moodle:
     # -- writes -----------------------------------------------------------
     def upload_draft(self, path: str, itemid: int = 0) -> int:
         p = Path(path).expanduser()
-        with p.open("rb") as fh:
+        with p.open("rb") as fh, self._net("file upload"):
             r = self.http.post(f"{self.url}/webservice/upload.php",
                                data={"token": self.token, "filearea": "draft", "itemid": itemid},
                                files={"file_1": (p.name, fh)})
-        r.raise_for_status()
-        res = r.json()
+        if r.status_code >= 300:
+            raise MoodleError(f"File upload failed (HTTP {r.status_code}).", "httperror")
+        try:
+            res = r.json()
+        except ValueError:
+            raise MoodleError("File upload: Moodle did not answer with JSON.", "badresponse") from None
         if isinstance(res, dict) and ("error" in res or "exception" in res):
-            raise MoodleError(res.get("error") or res.get("message"), res.get("errorcode"))
+            raise MoodleError(res.get("error") or res.get("message") or "File upload failed", res.get("errorcode"))
         return res[0]["itemid"]
 
     def save_submission(self, assign_id: int, text_html: str | None = None,
