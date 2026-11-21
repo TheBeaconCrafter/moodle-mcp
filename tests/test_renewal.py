@@ -304,3 +304,13 @@ def test_missing_password_file_is_a_problem_not_a_crash(tmp_path, monkeypatch):
     monkeypatch.setenv("MOODLE_MCP_PASSWORD_FILE", str(tmp_path / "nope"))
     assert mc.recall_password(URL, "s1") is None
     assert "can't be opened" in mc.password_file_problem()
+
+
+
+@pytest.mark.parametrize("argv", [["moodle", "--json", "status"], ["moodle", "status", "--json"]])
+def test_json_flag_works_before_or_after_the_subcommand(monkeypatch, capsys, argv):
+    monkeypatch.setattr("sys.argv", argv)
+    with pytest.raises(SystemExit):
+        cli.main()
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is False and out["errorcode"] == "notoken"
