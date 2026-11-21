@@ -54,7 +54,9 @@ moodle whoami
 
 ## Where it's stored
 
-`~/.config/moodle-mcp/config.json`. On macOS and Linux its permissions are set so only your user account can read it; on Windows it lives in your profile folder and relies on that folder's permissions. Change the location with the `MOODLE_MCP_CONFIG` environment variable, or skip the file entirely with `MOODLE_URL` + `MOODLE_TOKEN`.
+`~/.config/moodle-mcp/config.json`. On macOS and Linux its permissions are set so only your user account can read it; on Windows it lives in your profile folder and relies on that folder's permissions. Change the location with the `MOODLE_MCP_CONFIG` environment variable.
+
+You can skip the file and set `MOODLE_URL` + `MOODLE_TOKEN` instead, which suits a server or a CI job. On your own computer, stick with `moodle auth`: typing `export MOODLE_TOKEN=…` into a terminal leaves the token in your shell history. If `MOODLE_URL` points at a different site from the one you saved, the saved token is ignored, so a mistyped URL can't receive it.
 
 ```bash
 moodle logout    # deletes the file

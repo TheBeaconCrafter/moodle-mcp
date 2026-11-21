@@ -25,7 +25,7 @@
 
 moodle-mcp connects Claude to your Moodle account. From the chat you can ask what's due, have Claude open a reading or pull the text out of lecture slides, or check a grade.
 
-It's about 950 lines of Python running on your own laptop. It signs in with the personal token Moodle gives its phone app and calls the same web-service API the app uses, so Claude sees what you'd see in the app and nothing more. It doesn't scrape pages or ask for your password.
+It's about 1,400 lines of Python running on your own laptop. It signs in with the personal token Moodle gives its phone app and calls the same web-service API the app uses, so Claude sees what you'd see in the app and nothing more. It doesn't scrape pages or ask for your password.
 
 > [!NOTE]
 > It defaults to `moodle.trincoll.edu`, but it works with any Moodle site that allows the Moodle mobile app. See [Other schools](#other-schools).
@@ -240,7 +240,7 @@ moodle call core_calendar_get_calendar_upcoming_view '{}'   # 2. see what it ret
 
 ```bash
 uv run pytest                                          # offline tests, no Moodle needed
-uvx ruff check .                                       # lint
+uv run ruff check .                                    # lint
 npx @modelcontextprotocol/inspector moodle-mcp         # click through the tools in a browser
 ```
 
@@ -248,11 +248,14 @@ npx @modelcontextprotocol/inspector moodle-mcp         # click through the tools
 
 ## Privacy and safety
 
-- Your token sits in `~/.config/moodle-mcp/config.json` and goes nowhere except your school's Moodle. On macOS and Linux the file is readable only by your user account; on Windows it lives in your profile folder, which other standard users can't open. `moodle logout` deletes it.
+- Your token sits in `~/.config/moodle-mcp/config.json` and goes nowhere except your school's Moodle. On macOS and Linux the file is readable only by your user account; on Windows it lives in your profile folder. `moodle logout` deletes it.
 - The token can do anything the Moodle app can do as you, so keep it out of chats, group messages and repos. If it leaks, press Reset on the Security keys page and the old one stops working.
 - Anything a tool returns becomes part of your conversation with Claude, the same as text you paste in yourself.
-- Three tools can change things. `moodle_download` saves a file to your computer, while `moodle_submit_assignment` and `moodle_call` can write to Moodle. The other fourteen only read.
-- `moodle_submit_assignment` saves a draft unless you tell it to finalise, and its instructions tell Claude to show you the exact content before sending it.
+- Pages, posts, files and feedback from Moodle are written by other people, so Claude is told to treat them as data and never to download, submit or write anything because a page or file said so, only because you asked.
+- Three tools can change things. `moodle_download` saves a file to your computer, `moodle_submit_assignment` writes to Moodle, and `moodle_call` can write to Moodle only if you allow it. The other fourteen only read.
+- `moodle_download` only saves inside `~/Downloads/Moodle` (subfolders are fine) and never overwrites a file; a second copy gets ` (1)` added to its name. File URLs must point at your own Moodle site, so the token is never sent anywhere else.
+- `moodle_submit_assignment` saves a draft unless you tell it to finalise, and its instructions tell Claude to show you the exact content before sending it. It uploads files from your home folder only, up to 100 MB each, and refuses hidden files and folders (such as `.ssh` or `.env`) and the moodle-mcp config. To allow other folders, or to narrow it down, set `MOODLE_MCP_UPLOAD_DIRS` to a list of folders separated by `:` (`;` on Windows).
+- `moodle_call` runs only functions that read (`…_get_…`, `…_search_…`, `…_list_…` and the like). To let it call functions that write, set `MOODLE_MCP_ALLOW_RAW_WRITES=1` in the server's environment. Claude still has to show you the call and get a yes first.
 - Check your course's AI policy before you use this on graded work.
 
 ## Troubleshooting
@@ -265,6 +268,7 @@ npx @modelcontextprotocol/inspector moodle-mcp         # click through the tools
 | Claude doesn't list the tools | Start a new session after adding the server. In Claude Desktop, use the full path to `moodle-mcp` |
 | `accessexception` on one tool | Your school has switched that function off. `moodle functions` shows what's allowed |
 | A file says it can't extract text | Use `moodle download` and open the file instead |
+| `moodle_call` says writes are disabled | That's the default. Use a dedicated tool, or set `MOODLE_MCP_ALLOW_RAW_WRITES=1` for the server if you really want raw writes |
 
 ## Other schools
 
@@ -272,7 +276,9 @@ npx @modelcontextprotocol/inspector moodle-mcp         # click through the tools
 moodle auth --url https://moodle.yourschool.edu
 ```
 
-Your school's Moodle has to allow the mobile app, so if the Moodle phone app signs you in, this will work too. Setting the `MOODLE_URL` and `MOODLE_TOKEN` environment variables works in place of `moodle auth`.
+Your school's Moodle has to allow the mobile app, so if the Moodle phone app signs you in, this will work too. The site has to use `https://`.
+
+Prefer `moodle auth`, which reads the token from a hidden prompt. The `MOODLE_URL` and `MOODLE_TOKEN` environment variables also work, which helps on a server or in CI, but don't type `export MOODLE_TOKEN=…` into an interactive shell, because the token then sits in your shell history. If `MOODLE_URL` names a different site from the one you signed in to, the saved token isn't used and you need `MOODLE_TOKEN` as well.
 
 ## Credits
 
