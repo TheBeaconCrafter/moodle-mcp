@@ -427,7 +427,7 @@ def test_upload_refuses_the_password_file(upload_root, monkeypatch):
     monkeypatch.setenv("MOODLE_MCP_PASSWORD_FILE", str(pw))
     with pytest.raises(mc.MoodleError) as e:
         mc.check_upload_path(str(pw))
-    assert "PASSWORD_FILE" in str(e.value)
+    assert "password file" in str(e.value)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows file attributes")

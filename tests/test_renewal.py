@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 
 import httpx
 import pytest
@@ -232,7 +233,7 @@ def test_logout_uses_the_saved_site_not_moodle_url(monkeypatch, capsys):
     monkeypatch.setenv("MOODLE_URL", "https://other.example.org")
     _logout(monkeypatch)
     assert kr.deleted == [f"{URL}/Moodle|s1"] and not mc.CONFIG_PATH.exists()
-    assert "keychain" in capsys.readouterr().out
+    assert "Removed the remembered password" in capsys.readouterr().out
 
 
 def test_logout_reports_a_keychain_failure(monkeypatch, capsys):
@@ -325,3 +326,74 @@ def test_app_login_type_reads_public_config():
     def broken(request):
         return httpx.Response(500, text="nope")
     assert mc.app_login_type(URL, httpx.Client(transport=httpx.MockTransport(broken))) is None
+
+
+class _NoBackend:
+    """A keyring module whose backend fails, like keyring on a headless Linux box."""
+
+    class errors:
+        class PasswordDeleteError(Exception):
+            pass
+
+    def set_password(self, *a):
+        raise RuntimeError("No recommended backend was available")
+
+    def get_password(self, *a):
+        raise RuntimeError("No recommended backend was available")
+
+    def delete_password(self, *a):
+        raise self.errors.PasswordDeleteError()
+
+
+class _Keychain(_NoBackend):
+    def __init__(self):
+        self.store = {}
+
+    def set_password(self, service, user, pw):
+        self.store[(service, user)] = pw
+
+    def get_password(self, service, user):
+        return self.store.get((service, user))
+
+
+def test_headless_machine_falls_back_to_a_private_password_file(monkeypatch):
+    monkeypatch.delenv("MOODLE_MCP_PASSWORD_FILE", raising=False)
+    monkeypatch.setattr(mc, "_keyring", lambda: _NoBackend())
+    where = mc.remember_password(URL, "s1", PASSWORD)
+    path = mc.default_password_file()
+    assert str(path) in where and path.read_text(encoding="utf-8") == PASSWORD
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert mc.recall_password(URL, "s1") == PASSWORD
+    assert mc.forget_password(URL, "s1") == "deleted" and not path.exists()
+
+
+def test_keychain_wins_and_clears_an_old_password_file(monkeypatch):
+    monkeypatch.delenv("MOODLE_MCP_PASSWORD_FILE", raising=False)
+    mc._write_private(mc.default_password_file(), b"old")
+    kc = _Keychain()
+    monkeypatch.setattr(mc, "_keyring", lambda: kc)
+    assert mc.remember_password(URL, "s1", PASSWORD) == "the system keychain"
+    assert not mc.default_password_file().exists()
+    assert mc.recall_password(URL, "s1") == PASSWORD
+
+
+def test_fallback_password_file_renews_an_expired_token(monkeypatch):
+    monkeypatch.delenv("MOODLE_MCP_PASSWORD_FILE", raising=False)
+    monkeypatch.setattr(mc, "_keyring", lambda: _NoBackend())
+    mc.remember_password(URL, "s1", PASSWORD)
+    mc.save_config({"url": URL, "token": OLD, "username": "s1", "remember": True, "saved_at": 0})
+    logins = []
+    c = _client(_handler(NEW, logins))
+    assert c.whoami()["auto_renew"] is True and c.token == NEW and logins == ["s1"]
+
+
+def test_upload_refuses_the_fallback_password_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("MOODLE_MCP_PASSWORD_FILE", raising=False)
+    path = mc.default_password_file()
+    mc._write_private(path, b"secret")
+    monkeypatch.setenv("MOODLE_MCP_UPLOAD_DIRS", str(path.parent))
+    with pytest.raises(mc.MoodleError) as e:
+        mc.check_upload_path(str(path))
+    assert "password file" in str(e.value)

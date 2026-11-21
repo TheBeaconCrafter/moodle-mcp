@@ -9,8 +9,8 @@ import os
 import sys
 import time
 
+from . import client
 from .client import (
-    CONFIG_PATH,
     Moodle,
     MoodleError,
     app_login_type,
@@ -77,11 +77,11 @@ def cmd_auth(args) -> None:
             except MoodleError as e:
                 sys.exit(f"✗ {e}")
             extra = {"username": username, "remember": True}
-            print(f"✓ Password saved in {where}; the token will renew itself when it expires.")
+            print(f"✓ Password saved in {where}. The token will renew itself when it expires.")
         else:
             forget_password(url, username)
     else:
-        print(AUTH_HELP.format(url=url, path=CONFIG_PATH))
+        print(AUTH_HELP.format(url=url, path=client.CONFIG_PATH))
         raw = getpass.getpass("Paste token or launch link (hidden): ")
         try:
             token = parse_token(raw)
@@ -121,9 +121,9 @@ def cmd_logout(args) -> None:
             removed = clear_config()
     except MoodleError as e:
         sys.exit(f"✗ {e}")
-    print(f"✓ Removed {CONFIG_PATH}" if removed else "No saved token to remove.")
+    print(f"✓ Removed {client.CONFIG_PATH}" if removed else "No saved token to remove.")
     if status == "deleted":
-        print("✓ Removed the remembered password from the system keychain.")
+        print("✓ Removed the remembered password.")
     elif status == "failed":
         print("! Couldn't remove the remembered password from the system keychain. Delete the "
               "'moodle-mcp' entry in your keychain / credential manager by hand.", file=sys.stderr)

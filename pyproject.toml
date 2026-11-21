@@ -15,11 +15,13 @@ classifiers = [
 dependencies = [
     "mcp>=1.30,<2",
     "httpx>=0.28,<1",
+    "keyring>=25,<26",
     "pypdf>=6.1,<7",
 ]
 
 [project.optional-dependencies]
-keyring = ["keyring>=25,<26"]
+# Kept so older install commands with [keyring] still work; keyring is a regular dependency now.
+keyring = []
 
 [project.urls]
 Homepage = "https://github.com/TheBeaconCrafter/moodle-mcp"

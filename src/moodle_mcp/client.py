@@ -191,26 +191,31 @@ def clear_config() -> bool:
     return False
 
 
-def save_config(cfg: dict) -> None:
-    """Write the config atomically. The file is created 0600 from the start (never briefly world-readable)
-    in a 0700 folder; on Windows those modes don't set ACLs, so it relies on the profile folder's ACLs."""
-    folder = CONFIG_PATH.parent
+def _write_private(path: Path, data: bytes) -> None:
+    """Write a file atomically, created 0600 from the start (never briefly world-readable) in a 0700 folder.
+    On Windows those modes don't set ACLs, so it relies on the profile folder's ACLs."""
+    folder = path.parent
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         os.chmod(folder, 0o700)
     except OSError:
         pass
-    tmp = folder / f".{CONFIG_PATH.name}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
+    tmp = folder / f".{path.name}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
     try:
         with os.fdopen(fd, "wb") as fh:
-            fh.write(json.dumps(cfg, indent=2).encode("utf-8"))
+            fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, CONFIG_PATH)
+        os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def save_config(cfg: dict) -> None:
+    """Write the config atomically and privately (see _write_private)."""
+    _write_private(CONFIG_PATH, json.dumps(cfg, indent=2).encode("utf-8"))
 
 
 # ---------------------------------------------------------------- staying signed in
@@ -219,7 +224,8 @@ def save_config(cfg: dict) -> None:
 #  1. When Moodle says the token is invalid, the client re-reads the config file, so running `moodle auth`
 #     in a terminal fixes a running server without a restart.
 #  2. On sites with a Moodle password (not SSO), `moodle auth --password --remember` keeps the password in
-#     the OS keychain (or a file named by MOODLE_MCP_PASSWORD_FILE) and the client fetches a fresh token itself.
+#     the OS keychain and the client fetches a fresh token itself. Machines without a keychain (headless
+#     Linux) get a private password file next to the config instead; MOODLE_MCP_PASSWORD_FILE can name one.
 
 KEYRING_SERVICE = "moodle-mcp"
 TOKEN_ERRORS = {"invalidtoken", "accessexception"}
@@ -227,7 +233,7 @@ TOKEN_ERRORS = {"invalidtoken", "accessexception"}
 
 def _keyring():
     try:
-        import keyring  # optional extra: moodle-mcp[keyring]
+        import keyring
     except ImportError:
         return None
     return keyring
@@ -238,43 +244,50 @@ def _keyring_user(url: str, username: str) -> str:
 
 
 
-def remember_password(url: str, username: str, password: str) -> str:
-    """Store the password in the OS keychain. Returns where it went, or raises MoodleError.
+def default_password_file() -> Path:
+    """Where the password goes when the machine has no keychain: next to config.json, mode 0600."""
+    return CONFIG_PATH.parent / "password"
 
-    With MOODLE_MCP_PASSWORD_FILE set, the user keeps the password in that file themselves, so nothing is stored."""
+
+def remember_password(url: str, username: str, password: str) -> str:
+    """Remember the password for automatic token renewal. Returns where it went.
+
+    MOODLE_MCP_PASSWORD_FILE set: the user manages that file, nothing is stored. Otherwise the OS keychain;
+    if there is none (typical on headless Linux), a private file next to the config (0600 in a 0700 folder)."""
     if os.environ.get("MOODLE_MCP_PASSWORD_FILE", "").strip():
         return "MOODLE_MCP_PASSWORD_FILE (not copied anywhere)"
     kr = _keyring()
-    if kr is None:
-        raise MoodleError("Remembering a password needs the `keyring` package. Reinstall with the extra: "
-                          "uv tool install --force \"moodle-mcp[keyring] @ git+https://github.com/TheBeaconCrafter/"
-                          "moodle-mcp\", or point MOODLE_MCP_PASSWORD_FILE at a file only you can read.", "nokeyring")
-    try:
-        kr.set_password(KEYRING_SERVICE, _keyring_user(url, username), password)
-    except Exception as e:
-        raise MoodleError(f"Couldn't save the password to the system keychain ({type(e).__name__}). On a headless "
-                          "machine, use MOODLE_MCP_PASSWORD_FILE instead.", "nokeyring") from None
-    return "the system keychain"
+    if kr is not None:
+        try:
+            kr.set_password(KEYRING_SERVICE, _keyring_user(url, username), password)
+        except Exception:
+            pass
+        else:
+            default_password_file().unlink(missing_ok=True)  # don't leave an older copy on disk
+            return "the system keychain"
+    path = default_password_file()
+    _write_private(path, password.encode("utf-8"))
+    return f"{path} (no system keychain here; only your user account can read it)"
 
 
-def _read_password_file(path: str) -> tuple[str | None, str | None]:
-    """(password, problem) for MOODLE_MCP_PASSWORD_FILE. On macOS/Linux the file must belong to this user and
+def _read_password_file(path: str | Path) -> tuple[str | None, str | None]:
+    """(password, problem) for a password file. On macOS/Linux the file must belong to this user and
     give no access to group/other (chmod 600), checked with fstat on the opened file. Windows has no such mode
     bits, so there the file relies on the folder's ACLs (keep it in your profile folder)."""
     try:
         fd = os.open(Path(path).expanduser(), os.O_RDONLY | getattr(os, "O_BINARY", 0))
     except OSError as e:
-        return None, f"MOODLE_MCP_PASSWORD_FILE can't be opened ({type(e).__name__})."
+        return None, f"The password file {path} can't be opened ({type(e).__name__})."
     with os.fdopen(fd, "rb") as fh:
         if os.name != "nt":
             st = os.fstat(fh.fileno())
             if st.st_uid != os.getuid():
-                return None, "MOODLE_MCP_PASSWORD_FILE belongs to another user; refusing to use it."
+                return None, f"The password file {path} belongs to another user; refusing to use it."
             if st.st_mode & 0o077:
-                return None, ("MOODLE_MCP_PASSWORD_FILE is accessible to other users; refusing to use it. "
-                              "Run: chmod 600 on that file.")
+                return None, (f"The password file {path} is accessible to other users; refusing to use it. "
+                              f"Run: chmod 600 {path}")
         text = fh.read(64 * 1024).decode("utf-8", "replace").strip()
-    return (text or None), (None if text else "MOODLE_MCP_PASSWORD_FILE is empty.")
+    return (text or None), (None if text else f"The password file {path} is empty.")
 
 
 def password_file_problem() -> str | None:
@@ -284,26 +297,39 @@ def password_file_problem() -> str | None:
 
 
 def recall_password(url: str, username: str) -> str | None:
-    """The remembered password: MOODLE_MCP_PASSWORD_FILE first (handy for systemd credentials), then the keychain."""
+    """The remembered password: MOODLE_MCP_PASSWORD_FILE first (handy for systemd credentials), then the
+    keychain, then the private fallback file written on machines without a keychain."""
     path = os.environ.get("MOODLE_MCP_PASSWORD_FILE", "").strip()
     if path:
         return _read_password_file(path)[0]
     kr = _keyring()
-    if kr is None:
-        return None
-    try:
-        return kr.get_password(KEYRING_SERVICE, _keyring_user(url, username))
-    except Exception:
-        return None
+    if kr is not None:
+        try:
+            found = kr.get_password(KEYRING_SERVICE, _keyring_user(url, username))
+        except Exception:
+            found = None
+        if found:
+            return found
+    default = default_password_file()  # written on machines without a keychain
+    return _read_password_file(default)[0] if default.exists() else None
 
 
 def forget_password(url: str, username: str) -> str:
     """Delete a remembered password from the OS keychain.
 
-    Returns "deleted", "absent" (nothing stored), "nokeyring" (keyring isn't installed) or "failed"."""
+    Also removes the fallback password file. Returns "deleted", "absent" (nothing stored), "nokeyring"
+    (no keyring module and no file) or "failed"."""
+    file_deleted = False
+    default = default_password_file()
+    if default.exists():
+        try:
+            default.unlink()
+            file_deleted = True
+        except OSError:
+            return "failed"
     kr = _keyring()
     if kr is None:
-        return "nokeyring"
+        return "deleted" if file_deleted else "nokeyring"
     not_found = getattr(getattr(kr, "errors", None), "PasswordDeleteError", ())
     # Also the key format from before site_id() (whole URL lowercased), so upgrades don't leave it behind.
     keys = {_keyring_user(url, username), f"{str(url).rstrip('/').lower()}|{username}"}
@@ -316,7 +342,7 @@ def forget_password(url: str, username: str) -> str:
             pass
         except Exception:
             failed = True
-    return "failed" if failed else "deleted" if deleted else "absent"
+    return "failed" if failed else "deleted" if (deleted or file_deleted) else "absent"
 
 
 def password_login(url: str, username: str, password: str, http: httpx.Client | None = None) -> str:
@@ -1278,9 +1304,10 @@ def check_upload_path(path: str) -> Path:
         raise MoodleError(f"Not a regular file: {path}", "badupload")
     if p == CONFIG_PATH.expanduser().resolve():
         raise MoodleError("Refusing to upload the moodle-mcp config file (it holds your token).", "badupload")
-    pw_file = os.environ.get("MOODLE_MCP_PASSWORD_FILE", "").strip()
-    if pw_file and p == Path(pw_file).expanduser().resolve():
-        raise MoodleError("Refusing to upload the MOODLE_MCP_PASSWORD_FILE (it holds your password).", "badupload")
+    env_pw = os.environ.get("MOODLE_MCP_PASSWORD_FILE", "").strip()
+    pw_files = [default_password_file()] + ([Path(env_pw).expanduser()] if env_pw else [])
+    if any(p == f.resolve() for f in pw_files):
+        raise MoodleError("Refusing to upload the moodle-mcp password file (it holds your password).", "badupload")
     home = Path.home().resolve()
     for private in (home / "AppData", home / "Library"):
         if p == private or private in p.parents:
