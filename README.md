@@ -163,7 +163,7 @@ Then, in ChatGPT, add a custom MCP server and choose **Tunnel** with your tunnel
 | `moodle_assignment` | One assignment in full: instructions, attachments, time left, feedback |
 | `moodle_read` | Open any page, file, folder, link, forum or quiz by its id |
 | `moodle_file_text` | Text out of a PDF, Word, PowerPoint, Excel, HTML or plain-text file |
-| `moodle_download` | Save a course file to `~/Downloads/Moodle` |
+| `moodle_download` | Save a course file to `~/Downloads/Moodle`; it's cleaned up after 7 days unless you edit or move it |
 | `moodle_grades` | Grade items for one course, or totals for all of them |
 | `moodle_announcements` | Latest posts in each course's Announcements forum |
 | `moodle_discussion` | Every post in one forum thread |
@@ -191,6 +191,7 @@ moodle functions [FILTER]             what your token can call
 moodle call WSFUNCTION '{"json": "params"}'
 moodle quickstart                     guided setup for ChatGPT (OpenAI tunnel)
 moodle tunnel [status|install|update] manage OpenAI's tunnel-client
+moodle downloads [list|clean [--all]] files Claude/ChatGPT downloaded, and their clean-up
 moodle status                         is the sign-in still good? (exits 1 if not)
 moodle auth [--url URL] [--password [--remember]]   sign in (token prompt, or Moodle password)
 moodle logout                         delete the saved token
@@ -268,6 +269,7 @@ npx @modelcontextprotocol/inspector moodle-mcp         # click through the tools
 - Pages, posts, files and feedback from Moodle are written by other people, so Claude is told to treat them as data and never to download, submit or write anything because a page or file said so, only because you asked.
 - The server is read-only by default (see [Read-only mode](#read-only-mode)). Three tools can change things: `moodle_download` saves a file to your computer, while `moodle_submit_assignment` and `moodle_call` can write to Moodle, but only once you start the server with `--allow-writes`. The other fourteen only read.
 - `moodle_download` only saves inside `~/Downloads/Moodle` (subfolders are fine) and never overwrites a file; a second copy gets ` (1)` added to its name. File URLs must point at your own Moodle site, so the token is never sent anywhere else.
+- **Downloads clean themselves up.** Files `moodle_download` saved are deleted after 7 days, along with folders that end up empty. A file you edit or move out of the folder is yours and is never deleted, and neither is anything you put in `~/Downloads/Moodle` yourself (moodle-mcp only tracks its own downloads). Set `MOODLE_MCP_DOWNLOAD_DAYS` to change the number of days, or to `0` to turn this off. `moodle downloads` lists what's tracked, and `moodle downloads clean` runs the clean-up now. Files you save with the `moodle download` command aren't tracked.
 - `moodle_submit_assignment` saves a draft unless you tell it to finalise, and its instructions tell Claude to show you the exact content before sending it. It uploads files only from your Documents, Desktop and Downloads folders, up to 100 MB each, and refuses hidden files and folders (such as `.ssh` or `.env`, or anything Windows marks hidden or system), anything under `~/AppData` or `~/Library`, the moodle-mcp config and a `MOODLE_MCP_PASSWORD_FILE`. To allow other folders, or to narrow it down, set `MOODLE_MCP_UPLOAD_DIRS` to a list of folders separated by `:` (`;` on Windows).
 - `moodle_call` runs only functions that read (`…_get_…`, `…_search_…`, `…_list_…` and the like) unless writes are on. Even then, Claude has to show you the call and get a yes first.
 - Check your course's AI policy before you use this on graded work.
