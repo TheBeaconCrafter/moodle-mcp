@@ -694,6 +694,34 @@ def _dest_dir(dest: str, root: str | None) -> Path:
     return d_r
 
 
+_READ_VERBS = {"get", "search", "list", "count", "check", "can", "is", "has"}
+_PREDICATE_VERBS = {"check", "can", "is", "has"}  # yes/no questions such as mod_forum_can_add_discussion
+# Words that mean a write even after a read verb (get_..._and_save would be odd, but be safe).
+_WRITE_WORDS = {"add", "create", "update", "delete", "remove", "save", "submit", "set", "send", "mark", "edit",
+                "insert", "upload", "import", "reset", "lock", "unlock", "grant", "revoke", "toggle", "process",
+                "start", "finish", "accept", "decline", "confirm", "copy", "move", "duplicate", "restore", "approve",
+                "reject", "change", "enable", "disable", "block", "unblock", "mute", "unmute", "star", "unstar"}
+# Functions that hand out credentials (e.g. tool_mobile_get_autologin_key) are never "read-only" here.
+_CREDENTIAL_WORDS = {"token", "tokens", "autologin", "key", "keys", "password", "session"}
+
+
+def is_read_only_function(wsfunction: str) -> bool:
+    """Best-effort check that a web-service function only reads.
+
+    Moodle names functions <component>_<verb>_<thing>, where the component is one or two words
+    (core_get_string, core_course_get_contents, mod_assign_get_assignments). The verb must be a read
+    verb (get/search/list/count, or a check/can/is/has question), no word may name a credential, and
+    get/search/list/count functions may not contain a write word either. *_view_* functions count as
+    writes: they log a view and can tick activity completion."""
+    if not re.fullmatch(r"[a-z][a-z0-9]*(_[a-z0-9]+)+", wsfunction or ""):
+        return False
+    words = wsfunction.split("_")
+    verb = words[1] if words[1] in _READ_VERBS else words[2] if len(words) > 2 and words[2] in _READ_VERBS else None
+    if verb is None or set(words) & _CREDENTIAL_WORDS:
+        return False
+    return verb in _PREDICATE_VERBS or not (set(words) & _WRITE_WORDS)
+
+
 def upload_roots() -> list[Path]:
     """Folders submissions may upload from: MOODLE_MCP_UPLOAD_DIRS (os.pathsep-separated), else the home folder."""
     raw = os.environ.get("MOODLE_MCP_UPLOAD_DIRS", "")

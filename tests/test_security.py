@@ -318,3 +318,50 @@ def test_upload_roots_default_to_home(monkeypatch):
     monkeypatch.delenv("MOODLE_MCP_UPLOAD_DIRS", raising=False)
     from pathlib import Path
     assert mc.upload_roots() == [Path.home().resolve()]
+
+
+# ---------------------------------------------------------------- moodle_call gating
+
+
+@pytest.mark.parametrize("fn", [
+    "core_webservice_get_site_info", "core_course_get_contents", "mod_assign_get_assignments", "core_get_string",
+    "gradereport_user_get_grade_items", "message_popup_get_popup_notifications", "core_course_search_courses",
+    "core_competency_list_course_competencies", "mod_forum_can_add_discussion", "core_search_get_relevant_users",
+    "core_message_get_unread_conversations_count", "core_calendar_get_calendar_upcoming_view",
+])
+def test_read_only_functions_are_recognised(fn):
+    assert mc.is_read_only_function(fn)
+
+
+@pytest.mark.parametrize("fn", [
+    "mod_assign_save_submission", "mod_assign_submit_for_grading", "core_message_send_instant_messages",
+    "mod_forum_add_discussion_post", "core_user_update_picture", "core_completion_update_activity_completion_status_manually",
+    "mod_quiz_start_attempt", "mod_page_view_page", "core_message_mark_all_notifications_as_read",
+    "tool_mobile_get_autologin_key", "core_user_set_user_preferences", "core_get_and_delete_thing",
+    "", "get", "Core_Course_Get_Contents", "core_course_get_contents;rm", "mod_assign_get_x_y_z_save",
+])
+def test_writes_and_junk_are_not_read_only(fn):
+    assert not mc.is_read_only_function(fn)
+
+
+def test_moodle_call_blocks_writes_unless_allowed(monkeypatch):
+    from moodle_mcp import server
+
+    calls = []
+
+    class Fake:
+        token = TOKEN
+
+        def call(self, wsfunction, /, **params):
+            calls.append(wsfunction)
+            return {"ok": True}
+
+    monkeypatch.setattr(server, "_client", Fake())
+    monkeypatch.delenv("MOODLE_MCP_ALLOW_RAW_WRITES", raising=False)
+    out = server.moodle_call("mod_assign_save_submission", {"assignmentid": 1})
+    assert out["errorcode"] == "writesdisabled" and "MOODLE_MCP_ALLOW_RAW_WRITES" in out["error"]
+    assert calls == []
+    assert server.moodle_call("core_course_get_contents", {"courseid": 1}) == {"ok": True}
+    monkeypatch.setenv("MOODLE_MCP_ALLOW_RAW_WRITES", "1")
+    assert server.moodle_call("mod_assign_save_submission", {"assignmentid": 1}) == {"ok": True}
+    assert calls == ["core_course_get_contents", "mod_assign_save_submission"]

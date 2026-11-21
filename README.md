@@ -160,7 +160,7 @@ HTTP mode only listens on 127.0.0.1, rejects requests with a foreign `Host` head
 | `moodle_notifications` | The bell-icon notifications: grades, feedback, reminders |
 | `moodle_whoami` | Check the connection |
 | `moodle_functions` | List the raw API functions your token is allowed to call |
-| `moodle_call` | Call any of those functions directly (the escape hatch) |
+| `moodle_call` | Call any of those functions directly (the escape hatch). Read-only functions only, unless you turn writes on |
 | `moodle_submit_assignment` ⚠️ | Save a submission. Stays a draft unless you say to finalise |
 
 ## The `moodle` command

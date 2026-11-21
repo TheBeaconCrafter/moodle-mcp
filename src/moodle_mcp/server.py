@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from .client import DOWNLOAD_ROOT, Moodle, MoodleError, redact
+from .client import DOWNLOAD_ROOT, Moodle, MoodleError, is_read_only_function, redact
 
 mcp = FastMCP(
     "moodle",
@@ -170,10 +171,19 @@ def moodle_functions(match: str | None = None) -> Any:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True))
 def moodle_call(wsfunction: str, params: dict | None = None) -> Any:
-    """Escape hatch: call any Moodle web-service function the token allows, e.g.
+    """Escape hatch: call a Moodle web-service function the token allows when no dedicated tool fits, e.g.
     wsfunction='mod_quiz_get_quizzes_by_courses', params={'courseids': [123]}. Nested params are fine.
-    Treat any function that writes (save/submit/update/delete/send) like a submission: confirm first."""
-    return _guard(lambda: m().call(wsfunction, **(params or {})))
+    Only read-only functions run by default (<component>_get_/search_/list_/count_/check_/can_/is_/has_…);
+    anything else, including *_view_* and credential functions, returns an error unless the user has set
+    MOODLE_MCP_ALLOW_RAW_WRITES=1. Even then, treat a write like a submission: show the user the exact
+    function and params and get a clear yes first."""
+    def run():
+        if not is_read_only_function(wsfunction) and os.environ.get("MOODLE_MCP_ALLOW_RAW_WRITES") != "1":
+            raise MoodleError(
+                f"{wsfunction} doesn't look read-only, and writes through moodle_call are disabled. Use a dedicated "
+                "tool, or the user can set MOODLE_MCP_ALLOW_RAW_WRITES=1 for the server to allow them.", "writesdisabled")
+        return m().call(wsfunction, **(params or {}))
+    return _guard(run)
 
 
 def _bearer_guard(app, token: str):
@@ -199,8 +209,6 @@ def serve_http(port: int = 8765, path: str = "/mcp") -> None:
     """Serve MCP over Streamable HTTP on 127.0.0.1 only (for tunnels such as OpenAI's Secure MCP Tunnel).
 
     If MOODLE_MCP_HTTP_TOKEN is set, requests must send it as a bearer token."""
-    import os
-
     import uvicorn
 
     mcp.settings.port = port
