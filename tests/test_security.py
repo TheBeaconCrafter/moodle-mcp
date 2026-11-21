@@ -841,3 +841,33 @@ def test_server_supplied_error_code_is_sanitised_and_redacted(monkeypatch, fake_
     assert server.moodle_courses("all")["errorcode"] == "moodleerror"
     out = server.moodle_courses("all")
     assert out["errorcode"] == "moodleerror" and TOKEN not in str(out)
+
+
+# ---------------------------------------------------------------- Windows download hazards
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("/pluginfile.php/1/a/0/desktop.ini", "desktop.ini.download"),
+    ("/pluginfile.php/1/a/0/Desktop.INI", "Desktop.INI.download"),
+    ("/pluginfile.php/1/a/0/notes.url", "notes.url.download"),
+    ("/pluginfile.php/1/a/0/x.LNK", "x.LNK.download"),
+    ("/pluginfile.php/1/a/0/x.scf", "x.scf.download"),
+    ("/pluginfile.php/1/a/0/x.library-ms", "x.library-ms.download"),
+    ("/pluginfile.php/1/a/0/x.searchConnector-ms", "x.searchConnector-ms.download"),
+    ("/pluginfile.php/1/a/0/x.settingcontent-ms", "x.settingcontent-ms.download"),
+    ("/pluginfile.php/1/a/0/curl.pdf", "curl.pdf"),
+])
+def test_shell_active_names_are_neutralised(raw, expected):
+    assert mc.safe_filename(raw) == expected
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS alternate data streams")
+def test_download_gets_a_mark_of_the_web(fake_moodle, tmp_path):
+    c = fake_moodle(_file_server(b"data"))
+    path = c.download(FILE + "?forcedownload=1", str(tmp_path))
+    try:
+        zone = open(path + ":Zone.Identifier", encoding="utf-8").read()
+    except OSError:
+        pytest.skip("filesystem without alternate data streams")
+    assert "ZoneId=3" in zone and f"HostUrl={FILE}" in zone
+    assert "token" not in zone and "forcedownload" not in zone

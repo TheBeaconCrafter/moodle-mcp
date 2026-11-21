@@ -1032,6 +1032,7 @@ class Moodle:
             except BaseException:
                 path.unlink(missing_ok=True)
                 raise
+        _mark_of_the_web(path, fileurl)
         return str(path)
 
     def file_text(self, fileurl: str) -> str:
@@ -1082,6 +1083,8 @@ class Moodle:
 # ---------------------------------------------------------------- helpers
 
 _UNSAFE_NAME_CHARS = re.compile(r'[\x00-\x1f<>:"|?*]')
+# File types Windows Explorer runs or follows on its own (folder customisation, shortcuts, search connectors).
+_SHELL_ACTIVE_SUFFIXES = (".library-ms", ".searchconnector-ms", ".url", ".scf", ".lnk", ".settingcontent-ms")
 _WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
 
@@ -1095,7 +1098,25 @@ def safe_filename(raw: str) -> str:
         raise MoodleError("The file URL has no usable file name.", "badfilename")
     if name.split(".", 1)[0].upper() in _WINDOWS_RESERVED:
         name = "_" + name
+    low = name.lower()
+    if low == "desktop.ini" or low.endswith(_SHELL_ACTIVE_SUFFIXES):
+        name += ".download"  # Explorer acts on these just by showing the folder (or with one click)
     return name
+
+
+def _mark_of_the_web(path: Path, source_url: str) -> None:
+    """On Windows, tag a downloaded file as coming from the internet (Zone.Identifier stream), like a browser
+    does, so Office opens it in Protected View and SmartScreen checks it. Ignored on other systems and on
+    drives without alternate data streams (FAT32, network shares)."""
+    if os.name != "nt":
+        return
+    u = urlsplit(source_url)
+    host_url = urlunsplit((u.scheme, u.netloc, u.path, "", ""))  # never the query: it can carry a token
+    try:
+        with open(f"{path}:Zone.Identifier", "w", encoding="utf-8", newline="") as fh:
+            fh.write(f"[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={host_url}\r\n")
+    except OSError:
+        pass
 
 
 def _dest_dir(dest: str, root: str | None) -> Path:

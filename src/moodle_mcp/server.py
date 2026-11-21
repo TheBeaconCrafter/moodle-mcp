@@ -154,7 +154,8 @@ def moodle_file_text(fileurl: str, offset: int = 0, max_chars: int = 40000) -> A
 def moodle_download(fileurl: str, dest_dir: str = DOWNLOAD_ROOT) -> Any:
     """Save a Moodle file (a `fileurl` from another tool) into ~/Downloads/Moodle and return the local path.
     dest_dir may name a subfolder of ~/Downloads/Moodle (e.g. 'CHEM 111'); anything outside it is refused.
-    Existing files are never overwritten: a clash gets ' (1)', ' (2)'… added to the name."""
+    Existing files are never overwritten: a clash gets ' (1)', ' (2)'… added to the name. Names Windows Explorer
+    acts on by itself (desktop.ini, .lnk, .url, .scf, .library-ms, …) get '.download' appended."""
     return _guard(lambda: {"path": m().download(fileurl, dest_dir, root=DOWNLOAD_ROOT)})
 
 
