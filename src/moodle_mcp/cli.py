@@ -34,7 +34,8 @@ Instead it uses the same per-user token the official Moodle app gets. Two ways t
      {url}/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=1&urlscheme=moodlemobile&confirmed=1
      Right-click "Click here to launch the app" → Copy Link Address, and paste that whole link.
 
-The token is stored in {path} (readable only by you).
+The token is stored in {path} (readable only by your user account on macOS/Linux;
+on Windows it lives in your profile folder).
 """
 
 

@@ -98,10 +98,25 @@ def clear_config() -> bool:
 
 
 def save_config(cfg: dict) -> None:
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(CONFIG_PATH.parent, 0o700)
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
-    os.chmod(CONFIG_PATH, 0o600)
+    """Write the config atomically. The file is created 0600 from the start (never briefly world-readable)
+    in a 0700 folder; on Windows those modes don't set ACLs, so it relies on the profile folder's ACLs."""
+    folder = CONFIG_PATH.parent
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(folder, 0o700)
+    except OSError:
+        pass
+    tmp = folder / f".{CONFIG_PATH.name}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(json.dumps(cfg, indent=2).encode("utf-8"))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, CONFIG_PATH)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def parse_token(raw: str) -> str:

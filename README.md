@@ -248,7 +248,7 @@ npx @modelcontextprotocol/inspector moodle-mcp         # click through the tools
 
 ## Privacy and safety
 
-- Your token sits in `~/.config/moodle-mcp/config.json`, readable only by your user account, and goes nowhere except your school's Moodle. `moodle logout` deletes it.
+- Your token sits in `~/.config/moodle-mcp/config.json` and goes nowhere except your school's Moodle. On macOS and Linux the file is readable only by your user account; on Windows it lives in your profile folder, which other standard users can't open. `moodle logout` deletes it.
 - The token can do anything the Moodle app can do as you, so keep it out of chats, group messages and repos. If it leaks, press Reset on the Security keys page and the old one stops working.
 - Anything a tool returns becomes part of your conversation with Claude, the same as text you paste in yourself.
 - Three tools can change things. `moodle_download` saves a file to your computer, while `moodle_submit_assignment` and `moodle_call` can write to Moodle. The other fourteen only read.

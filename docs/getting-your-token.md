@@ -54,7 +54,7 @@ moodle whoami
 
 ## Where it's stored
 
-`~/.config/moodle-mcp/config.json`, with permissions set so only your user account can read it. Change the location with the `MOODLE_MCP_CONFIG` environment variable, or skip the file entirely with `MOODLE_URL` + `MOODLE_TOKEN`.
+`~/.config/moodle-mcp/config.json`. On macOS and Linux its permissions are set so only your user account can read it; on Windows it lives in your profile folder and relies on that folder's permissions. Change the location with the `MOODLE_MCP_CONFIG` environment variable, or skip the file entirely with `MOODLE_URL` + `MOODLE_TOKEN`.
 
 ```bash
 moodle logout    # deletes the file

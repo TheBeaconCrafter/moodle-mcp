@@ -416,3 +416,31 @@ def test_moodle_url_for_the_same_site_keeps_the_saved_token(monkeypatch):
     mc.save_config({"url": "https://a.example.edu", "token": "x" * 32})
     monkeypatch.setenv("MOODLE_URL", "https://A.example.edu/")
     assert mc.load_config()["token"] == "x" * 32
+
+
+# ---------------------------------------------------------------- config file
+
+
+def test_save_config_is_atomic_and_private(isolated_config):
+    import os
+
+    mc.save_config({"url": SITE, "token": "a" * 32})
+    mc.save_config({"url": SITE, "token": "b" * 32})
+    assert mc.load_config()["token"] == "b" * 32
+    assert [p.name for p in isolated_config.parent.iterdir()] == [isolated_config.name]  # no temp files left
+    if os.name != "nt":
+        assert isolated_config.stat().st_mode & 0o777 == 0o600
+        assert isolated_config.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_save_config_failure_leaves_the_old_file(isolated_config, monkeypatch):
+    mc.save_config({"url": SITE, "token": "a" * 32})
+
+    def boom(*a):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mc.os, "replace", boom)
+    with pytest.raises(OSError):
+        mc.save_config({"url": SITE, "token": "b" * 32})
+    assert mc.load_config()["token"] == "a" * 32
+    assert len(list(isolated_config.parent.iterdir())) == 1
