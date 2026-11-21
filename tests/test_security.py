@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from moodle_mcp import client as mc
+from moodle_mcp import server
 
 TOKEN = "t" * 32
 SITE = "https://moodle.example.edu"
@@ -345,7 +346,6 @@ def test_writes_and_junk_are_not_read_only(fn):
 
 
 def test_moodle_call_blocks_writes_unless_allowed(monkeypatch):
-    from moodle_mcp import server
 
     calls = []
 
@@ -357,12 +357,13 @@ def test_moodle_call_blocks_writes_unless_allowed(monkeypatch):
             return {"ok": True}
 
     monkeypatch.setattr(server, "_client", Fake())
-    monkeypatch.delenv("MOODLE_MCP_ALLOW_RAW_WRITES", raising=False)
+    monkeypatch.delenv("MOODLE_MCP_ALLOW_WRITES", raising=False)
+    monkeypatch.setattr(server, "_allow_writes", False)
     out = server.moodle_call("mod_assign_save_submission", {"assignmentid": 1})
-    assert out["errorcode"] == "writesdisabled" and "MOODLE_MCP_ALLOW_RAW_WRITES" in out["error"]
+    assert out["errorcode"] == "readonly" and "--allow-writes" in out["error"]
     assert calls == []
     assert server.moodle_call("core_course_get_contents", {"courseid": 1}) == {"ok": True}
-    monkeypatch.setenv("MOODLE_MCP_ALLOW_RAW_WRITES", "1")
+    monkeypatch.setenv("MOODLE_MCP_ALLOW_WRITES", "1")
     assert server.moodle_call("mod_assign_save_submission", {"assignmentid": 1}) == {"ok": True}
     assert calls == ["core_course_get_contents", "mod_assign_save_submission"]
 
@@ -514,7 +515,6 @@ def test_client_uses_split_timeouts():
 @pytest.mark.parametrize("offset, max_chars, expect_offset, expect_len", [
     (-5, 10, 0, 10), (0, 0, 0, 1), (0, -3, 0, 1), (0, 10**9, 0, 100_000), (999_999, 10, 999_999, 0)])
 def test_file_text_slices_are_clamped(monkeypatch, offset, max_chars, expect_offset, expect_len):
-    from moodle_mcp import server
 
     class Fake:
         token = TOKEN
@@ -578,3 +578,35 @@ def test_flatten_caps_depth():
     out = {}
     mc._flatten("", {"x": ok}, out)
     assert len(out) == 1
+
+
+# ---------------------------------------------------------------- read-only by default
+
+
+def test_submit_is_refused_in_read_only_mode(monkeypatch):
+    calls = []
+
+    class Fake:
+        token = TOKEN
+
+        def save_submission(self, *a):
+            calls.append(a)
+            return {"saved": True}
+
+    monkeypatch.setattr(server, "_client", Fake())
+    monkeypatch.delenv("MOODLE_MCP_ALLOW_WRITES", raising=False)
+    monkeypatch.setattr(server, "_allow_writes", False)
+    out = server.moodle_submit_assignment(1, text_html="<p>hi</p>")
+    assert out["errorcode"] == "readonly" and calls == []
+    monkeypatch.setattr(server, "_allow_writes", True)
+    assert server.moodle_submit_assignment(1, text_html="<p>hi</p>") == {"saved": True}
+
+
+def test_allow_writes_flag_and_env(monkeypatch):
+    monkeypatch.setattr(server, "_allow_writes", False)
+    monkeypatch.delenv("MOODLE_MCP_ALLOW_WRITES", raising=False)
+    assert not server.writes_allowed()
+    monkeypatch.setenv("MOODLE_MCP_ALLOW_WRITES", "true")
+    assert server.writes_allowed()
+    monkeypatch.setenv("MOODLE_MCP_ALLOW_WRITES", "0")
+    assert not server.writes_allowed()

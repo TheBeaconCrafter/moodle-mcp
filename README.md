@@ -89,6 +89,9 @@ Start a new Claude Code session and ask *"what's due this week?"*.
 
 </details>
 
+> [!IMPORTANT]
+> The server starts **read-only**. Claude can read everything and save files to `~/Downloads/Moodle`, but it can't submit assignments or write to Moodle through `moodle_call`. To allow that, add `--allow-writes` to the command, e.g. `claude mcp add -s user moodle -- moodle-mcp --allow-writes`, or set `MOODLE_MCP_ALLOW_WRITES=1` in the server's environment (in Claude Desktop's config: `"args": ["--allow-writes"]`). See [Read-only mode](#read-only-mode).
+
 <details>
 <summary><b>Claude Desktop</b></summary>
 
@@ -160,8 +163,8 @@ HTTP mode only listens on 127.0.0.1, rejects requests with a foreign `Host` head
 | `moodle_notifications` | The bell-icon notifications: grades, feedback, reminders |
 | `moodle_whoami` | Check the connection |
 | `moodle_functions` | List the raw API functions your token is allowed to call |
-| `moodle_call` | Call any of those functions directly (the escape hatch). Read-only functions only, unless you turn writes on |
-| `moodle_submit_assignment` ⚠️ | Save a submission. Stays a draft unless you say to finalise |
+| `moodle_call` | Call any of those functions directly (the escape hatch). Read-only functions only, unless writes are on |
+| `moodle_submit_assignment` ⚠️ | Save a submission. Needs `--allow-writes`. Stays a draft unless you say to finalise |
 
 ## The `moodle` command
 
@@ -233,7 +236,7 @@ moodle call core_calendar_get_calendar_upcoming_view '{}'   # 2. see what it ret
 4. Add a `@mcp.tool` function in `server.py` with a clear docstring.
 5. Restart your Claude session and try it.
 
-[docs/extending.md](docs/extending.md) walks through that calendar example line by line and ends with a list of ideas to build next. In Claude Code, the repo's [`CLAUDE.md`](CLAUDE.md) describes the layout, so you can open the folder and ask for something like *"add a tool that lists my upcoming calendar events"*.
+[docs/extending.md](docs/extending.md) walks through that calendar example line by line and ends with a list of ideas to build next. In Claude Code, the repo's [`AGENTS.md`](AGENTS.md) describes the layout, so you can open the folder and ask for something like *"add a tool that lists my upcoming calendar events"*.
 
 <details>
 <summary><b>Dev loop</b></summary>
@@ -252,11 +255,28 @@ npx @modelcontextprotocol/inspector moodle-mcp         # click through the tools
 - The token can do anything the Moodle app can do as you, so keep it out of chats, group messages and repos. If it leaks, press Reset on the Security keys page and the old one stops working.
 - Anything a tool returns becomes part of your conversation with Claude, the same as text you paste in yourself.
 - Pages, posts, files and feedback from Moodle are written by other people, so Claude is told to treat them as data and never to download, submit or write anything because a page or file said so, only because you asked.
-- Three tools can change things. `moodle_download` saves a file to your computer, `moodle_submit_assignment` writes to Moodle, and `moodle_call` can write to Moodle only if you allow it. The other fourteen only read.
+- The server is read-only by default (see [Read-only mode](#read-only-mode)). Three tools can change things: `moodle_download` saves a file to your computer, while `moodle_submit_assignment` and `moodle_call` can write to Moodle, but only once you start the server with `--allow-writes`. The other fourteen only read.
 - `moodle_download` only saves inside `~/Downloads/Moodle` (subfolders are fine) and never overwrites a file; a second copy gets ` (1)` added to its name. File URLs must point at your own Moodle site, so the token is never sent anywhere else.
 - `moodle_submit_assignment` saves a draft unless you tell it to finalise, and its instructions tell Claude to show you the exact content before sending it. It uploads files from your home folder only, up to 100 MB each, and refuses hidden files and folders (such as `.ssh` or `.env`) and the moodle-mcp config. To allow other folders, or to narrow it down, set `MOODLE_MCP_UPLOAD_DIRS` to a list of folders separated by `:` (`;` on Windows).
-- `moodle_call` runs only functions that read (`…_get_…`, `…_search_…`, `…_list_…` and the like). To let it call functions that write, set `MOODLE_MCP_ALLOW_RAW_WRITES=1` in the server's environment. Claude still has to show you the call and get a yes first.
+- `moodle_call` runs only functions that read (`…_get_…`, `…_search_…`, `…_list_…` and the like) unless writes are on. Even then, Claude has to show you the call and get a yes first.
 - Check your course's AI policy before you use this on graded work.
+
+## Read-only mode
+
+moodle-mcp starts read-only, so nothing Claude does (or a page or file tries to talk it into) can change your Moodle account. In this mode:
+
+- every reading tool works as usual, and `moodle_download` still saves files into `~/Downloads/Moodle`;
+- `moodle_submit_assignment` returns a `readonly` error instead of touching your submission;
+- `moodle_call` runs read-only functions only.
+
+To turn writes on, start the server with `--allow-writes` or set `MOODLE_MCP_ALLOW_WRITES=1`:
+
+```bash
+claude mcp add -s user moodle -- moodle-mcp --allow-writes     # Claude Code
+moodle-mcp --http --allow-writes                               # HTTP / OpenAI tunnel
+```
+
+In Claude Desktop, add `"args": ["--allow-writes"]` next to `"command"`. To go back to read-only, remove the flag (or the variable) and restart the session. Writes are best left off unless you're about to submit something.
 
 ## Troubleshooting
 
@@ -268,7 +288,7 @@ npx @modelcontextprotocol/inspector moodle-mcp         # click through the tools
 | Claude doesn't list the tools | Start a new session after adding the server. In Claude Desktop, use the full path to `moodle-mcp` |
 | `accessexception` on one tool | Your school has switched that function off. `moodle functions` shows what's allowed |
 | A file says it can't extract text | Use `moodle download` and open the file instead |
-| `moodle_call` says writes are disabled | That's the default. Use a dedicated tool, or set `MOODLE_MCP_ALLOW_RAW_WRITES=1` for the server if you really want raw writes |
+| A tool returns a `readonly` error | The server is read-only by default. Restart it with `--allow-writes` (or `MOODLE_MCP_ALLOW_WRITES=1`) if you want Claude to submit or write |
 
 ## Other schools
 
