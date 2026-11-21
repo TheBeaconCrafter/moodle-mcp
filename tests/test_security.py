@@ -497,6 +497,39 @@ def test_moodle_url_for_the_same_site_keeps_the_saved_token(monkeypatch):
     assert mc.load_config()["token"] == "x" * 32
 
 
+@pytest.mark.parametrize("a, b", [
+    ("https://moodle.example.edu", "HTTPS://Moodle.Example.EDU/"),
+    ("https://moodle.example.edu/moodle", "https://MOODLE.example.edu/moodle//"),
+    ("https://moodle.example.edu:443/x", "https://moodle.example.edu/x"),
+    ("http://[::1]:8000/m", "http://[::1]:8000/m/"),
+])
+def test_site_id_same_site(a, b):
+    assert mc.site_id(a) == mc.site_id(b)
+
+
+@pytest.mark.parametrize("a, b", [
+    ("https://moodle.example.edu/Moodle", "https://moodle.example.edu/moodle"),
+    ("https://moodle.example.edu/moodle", "https://moodle.example.edu"),
+    ("https://moodle.example.edu:8443", "https://moodle.example.edu"),
+    ("http://localhost", "https://localhost"),
+])
+def test_site_id_different_sites(a, b):
+    assert mc.site_id(a) != mc.site_id(b)
+
+
+def test_moodle_url_with_a_different_path_case_drops_the_saved_token(monkeypatch):
+    mc.save_config({"url": "https://a.example.edu/Moodle", "token": "x" * 32})
+    monkeypatch.setenv("MOODLE_URL", "https://a.example.edu/moodle")
+    assert "token" not in mc.load_config()
+    monkeypatch.setenv("MOODLE_URL", "https://A.EXAMPLE.EDU/Moodle/")
+    assert mc.load_config()["token"] == "x" * 32
+
+
+def test_keyring_key_keeps_path_case():
+    assert mc._keyring_user("https://A.example.edu/Moodle/", "s1") == "https://a.example.edu/Moodle|s1"
+    assert mc._keyring_user("https://a.example.edu/Moodle", "s1") != mc._keyring_user("https://a.example.edu/moodle", "s1")
+
+
 # ---------------------------------------------------------------- config file
 
 

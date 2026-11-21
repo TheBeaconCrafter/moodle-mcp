@@ -86,6 +86,15 @@ def test_renewal_never_uses_a_token_saved_for_another_site(monkeypatch):
         c.whoami()
 
 
+def test_renewal_treats_a_different_path_case_as_another_site():
+    mc.save_config({"url": URL + "/Moodle", "token": OLD})
+    c = _client(_handler(NEW, []))
+    mc.save_config({"url": URL + "/moodle", "token": NEW})
+    with pytest.raises(mc.MoodleError):
+        c.whoami()
+    assert c.token == OLD
+
+
 def test_password_login_errors_never_echo_the_password():
     http = httpx.Client(transport=httpx.MockTransport(_handler(NEW, [])))
     with pytest.raises(mc.MoodleError) as e:

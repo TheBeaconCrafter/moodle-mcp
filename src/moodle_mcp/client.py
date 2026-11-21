@@ -62,6 +62,26 @@ def redact(text: str, token: str | None = None) -> str:
 
 # ---------------------------------------------------------------- config
 
+def site_id(url: str | None) -> str:
+    """The canonical identity of a Moodle site: scheme and host[:port] lowercased, path kept as written
+    (Moodle paths are case-sensitive on most servers), trailing slashes dropped. "" for an empty URL."""
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    u = urlsplit(raw)
+    host = (u.hostname or "").lower()
+    if ":" in host:
+        host = f"[{host}]"
+    try:
+        port = u.port
+    except ValueError:
+        port = None
+    scheme = u.scheme.lower()
+    if port is not None and (scheme, port) not in (("https", 443), ("http", 80)):
+        host += f":{port}"
+    return f"{scheme}://{host}{u.path.rstrip('/')}"
+
+
 def load_config() -> dict:
     cfg: dict = {}
     if CONFIG_PATH.exists():
@@ -69,7 +89,7 @@ def load_config() -> dict:
     env_url = os.environ.get("MOODLE_URL", "").strip()
     if env_url:
         # The saved token belongs to the saved site; never send it to a different one.
-        if env_url.rstrip("/").lower() != str(cfg.get("url", "")).rstrip("/").lower():
+        if site_id(env_url) != site_id(cfg.get("url")):
             cfg.pop("token", None)
         cfg["url"] = env_url
     if os.environ.get("MOODLE_TOKEN"):
@@ -148,7 +168,8 @@ def _keyring():
 
 
 def _keyring_user(url: str, username: str) -> str:
-    return f"{url.rstrip('/').lower()}|{username}"
+    return f"{site_id(url)}|{username}"
+
 
 
 def remember_password(url: str, username: str, password: str) -> str:
@@ -386,7 +407,7 @@ class Moodle:
         if not self._renewable:
             return False
         cfg = load_config()
-        if str(cfg.get("url", "")).rstrip("/").lower() != self.url.lower():
+        if site_id(cfg.get("url")) != site_id(self.url):
             return False
         if cfg.get("token") and cfg["token"] != self.token:
             self.token, self._me = cfg["token"], None
