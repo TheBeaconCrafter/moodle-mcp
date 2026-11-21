@@ -8,7 +8,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from .client import DOWNLOAD_ROOT, Moodle, MoodleError, is_read_only_function, redact
+from .client import DOWNLOAD_ROOT, Moodle, MoodleError, is_read_only_function, redact, safe_code
 
 mcp = FastMCP(
     "moodle",
@@ -64,7 +64,7 @@ def _guard(fn) -> Any:
     try:
         return fn()
     except MoodleError as e:
-        return {"error": redact(str(e), _token()), "errorcode": e.code}
+        return {"error": redact(str(e), _token()), "errorcode": safe_code(redact(e.code, _token())) if e.code else None}
     except Exception as e:  # anything else (OSError, ValueError, a bad zip...) must not leak a URL with the token
         return {"error": redact(f"{type(e).__name__}: {e}", _token())}
 

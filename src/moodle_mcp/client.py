@@ -43,10 +43,21 @@ for _name in ("httpx", "httpcore"):
     logging.getLogger(_name).setLevel(logging.WARNING)
 
 
+_SAFE_CODE = re.compile(r"[a-z0-9_]{1,64}")
+
+
+def safe_code(code: Any) -> str | None:
+    """An error code fit to show: Moodle's own codes are short lowercase identifiers, so anything else
+    (which a hostile server could fill with text aimed at the model) becomes the generic "moodleerror"."""
+    if code is None:
+        return None
+    return code if isinstance(code, str) and _SAFE_CODE.fullmatch(code) else "moodleerror"
+
+
 class MoodleError(RuntimeError):
     def __init__(self, message: str, code: str | None = None):
         super().__init__(message)
-        self.code = code
+        self.code = safe_code(code)
 
 
 _TOKEN_PARAM = re.compile(r"((?:ws)?token=)[^&\s'\"<>]+", re.IGNORECASE)
@@ -328,7 +339,7 @@ def password_login(url: str, username: str, password: str, http: httpx.Client | 
                           "loginfailed")
     if not out.get("token"):
         msg = redact(str(out.get("error") or "Moodle refused the sign-in"), password)
-        raise MoodleError(f"Password sign-in failed: {msg}", out.get("errorcode") or "loginfailed")
+        raise MoodleError(f"Password sign-in failed: {msg}", redact(str(out.get("errorcode") or "loginfailed"), password))
     return str(out["token"])
 
 

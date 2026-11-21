@@ -25,6 +25,7 @@ from .client import (
     read_saved_config,
     redact,
     remember_password,
+    safe_code,
     save_config,
 )
 
@@ -134,7 +135,8 @@ def cmd_status(args) -> None:
     except MoodleError as e:
         msg = redact(str(e), c.token if c else None)
         if args.json:
-            _print({"ok": False, "error": msg, "errorcode": e.code})
+            code = safe_code(redact(e.code, c.token if c else None)) if e.code else None
+            _print({"ok": False, "error": msg, "errorcode": code})
         else:
             print(f"✗ {msg}")
         sys.exit(1)
