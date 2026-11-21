@@ -314,3 +314,14 @@ def test_json_flag_works_before_or_after_the_subcommand(monkeypatch, capsys, arg
         cli.main()
     out = json.loads(capsys.readouterr().out)
     assert out["ok"] is False and out["errorcode"] == "notoken"
+
+
+def test_app_login_type_reads_public_config():
+    def handler(request):
+        assert "tool_mobile_get_public_config" in str(request.url)
+        return httpx.Response(200, json=[{"error": False, "data": {"typeoflogin": 1}}])
+    assert mc.app_login_type(URL, httpx.Client(transport=httpx.MockTransport(handler))) == 1
+
+    def broken(request):
+        return httpx.Response(500, text="nope")
+    assert mc.app_login_type(URL, httpx.Client(transport=httpx.MockTransport(broken))) is None

@@ -13,6 +13,7 @@ from .client import (
     CONFIG_PATH,
     Moodle,
     MoodleError,
+    app_login_type,
     check_site_url,
     clear_config,
     config_lock,
@@ -89,7 +90,11 @@ def cmd_auth(args) -> None:
     try:
         who = Moodle(url=url, token=token).whoami()
     except MoodleError as e:
-        sys.exit(redact(f"✗ Moodle rejected that token: {e}", token))
+        hint = ""
+        if e.code == "invalidtoken" and app_login_type(url) == 1:
+            hint = ("\n  This site signs the Moodle app in with a username and password, so try:\n"
+                    f"    moodle auth --url {url} --password")
+        sys.exit(redact(f"✗ Moodle rejected that token: {e}{hint}", token))
     except Exception as e:
         sys.exit(redact(f"✗ Couldn't check that token: {type(e).__name__}: {e}", token))
     try:

@@ -343,6 +343,25 @@ def password_login(url: str, username: str, password: str, http: httpx.Client | 
     return str(out["token"])
 
 
+def app_login_type(url: str, http: httpx.Client | None = None) -> int | None:
+    """How the site signs the Moodle app in (tool_mobile_get_public_config, no token needed):
+    1 = username/password inside the app (login/token.php works), 2 = browser, 3 = embedded browser."""
+    own = http is None
+    http = http or httpx.Client(timeout=httpx.Timeout(connect=10, read=20, write=20, pool=10), follow_redirects=False,
+                                headers={"User-Agent": "moodle-mcp/0.1 (MoodleMobile)"})
+    try:
+        r = http.post(f"{check_site_url(url)}/lib/ajax/service-nologin.php?info=tool_mobile_get_public_config",
+                      json=[{"index": 0, "methodname": "tool_mobile_get_public_config", "args": {}}])
+        out = r.json()
+        value = out[0]["data"]["typeoflogin"] if r.status_code == 200 and not out[0].get("error") else None
+        return int(value) if value is not None else None
+    except Exception:
+        return None
+    finally:
+        if own:
+            http.close()
+
+
 def parse_token(raw: str) -> str:
     """Accept a bare token or the moodlemobile://token=... link the app launch page produces."""
     raw = raw.strip()
