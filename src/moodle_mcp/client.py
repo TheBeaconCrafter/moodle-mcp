@@ -223,14 +223,22 @@ def fmt_time(ts: int | None) -> str | None:
     return f"{d:%a %b} {d.day} {d.year} {d.hour % 12 or 12}:{d:%M %p}"
 
 
-def _flatten(prefix: str, value: Any, out: dict) -> None:
+FLATTEN_MAX_DEPTH = 10
+
+
+def _flatten(prefix: str, value: Any, out: dict, depth: int = 0) -> None:
     """Moodle REST wants nested params as courseids[0]=1&options[0][name]=x."""
+    if depth > FLATTEN_MAX_DEPTH:
+        raise MoodleError(f"Parameters are nested more than {FLATTEN_MAX_DEPTH} levels deep.", "badparams")
     if isinstance(value, dict):
         for k, v in value.items():
-            _flatten(f"{prefix}[{k}]" if prefix else k, v, out)
+            k = str(k)
+            if "[" in k or "]" in k:
+                raise MoodleError(f"Parameter names can't contain [ or ]: {k!r}. Nest dicts/lists instead.", "badparams")
+            _flatten(f"{prefix}[{k}]" if prefix else k, v, out, depth + 1)
     elif isinstance(value, (list, tuple)):
         for i, v in enumerate(value):
-            _flatten(f"{prefix}[{i}]", v, out)
+            _flatten(f"{prefix}[{i}]", v, out, depth + 1)
     elif isinstance(value, bool):
         out[prefix] = int(value)
     elif value is not None:

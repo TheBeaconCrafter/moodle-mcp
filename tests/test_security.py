@@ -554,3 +554,27 @@ def test_template_content_is_dropped():
 
 def test_unclosed_tags_are_flushed():
     assert mc.html_to_text("<p>tail text &amp").startswith("tail text")
+
+
+# ---------------------------------------------------------------- param flattening
+
+
+@pytest.mark.parametrize("params", [{"wstoken]": 1}, {"a[b]": 1}, {"options": [{"name[": "x"}]}])
+def test_flatten_rejects_bracketed_keys(params):
+    with pytest.raises(mc.MoodleError) as e:
+        mc._flatten("", params, {})
+    assert e.value.code == "badparams"
+
+
+def test_flatten_caps_depth():
+    deep = 1
+    for _ in range(mc.FLATTEN_MAX_DEPTH + 2):
+        deep = {"a": deep}
+    with pytest.raises(mc.MoodleError):
+        mc._flatten("", deep, {})
+    ok = 1
+    for _ in range(mc.FLATTEN_MAX_DEPTH - 1):
+        ok = [ok]
+    out = {}
+    mc._flatten("", {"x": ok}, out)
+    assert len(out) == 1
