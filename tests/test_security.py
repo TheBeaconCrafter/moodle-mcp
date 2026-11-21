@@ -421,6 +421,18 @@ def test_upload_refuses_app_data_even_inside_a_root(upload_root, rel):
     assert e.value.code == "badupload"
 
 
+@pytest.mark.parametrize("name", ["tunnel-runtime.key", "http-token", "tunnel.env", "tunnel/moodle.yaml"])
+def test_upload_refuses_anything_in_the_config_folder(upload_root, monkeypatch, name):
+    cfg_dir = upload_root / "Documents" / "moodle-mcp"
+    monkeypatch.setattr(mc, "CONFIG_PATH", cfg_dir / "config.json")
+    f = cfg_dir / name
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("secret")
+    with pytest.raises(mc.MoodleError) as e:
+        mc.check_upload_path(str(f))
+    assert "config folder" in str(e.value)
+
+
 def test_upload_refuses_the_password_file(upload_root, monkeypatch):
     pw = upload_root / "pw.txt"
     pw.write_text("hunter2")

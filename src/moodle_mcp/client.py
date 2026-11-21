@@ -1361,7 +1361,8 @@ def check_upload_path(path: str) -> Path:
     The file must be a regular file of at most UPLOAD_MAX_BYTES inside an upload root, with no hidden
     (dot-named, or on Windows hidden/system-attributed) folder or file below that root. It must not be in
     ~/AppData or ~/Library (application data, browser profiles, keychains), and must not be this tool's
-    config file or the MOODLE_MCP_PASSWORD_FILE."""
+    config file, the MOODLE_MCP_PASSWORD_FILE, or anything else in the config folder (runtime key, HTTP token,
+    tunnel settings, password files)."""
     try:
         p = Path(path).expanduser().resolve(strict=True)
     except (OSError, RuntimeError):
@@ -1374,6 +1375,10 @@ def check_upload_path(path: str) -> Path:
     pw_files = [default_password_file()] + ([Path(env_pw).expanduser()] if env_pw else [])
     if any(p == f.resolve() for f in pw_files):
         raise MoodleError("Refusing to upload the moodle-mcp password file (it holds your password).", "badupload")
+    config_dir = CONFIG_PATH.expanduser().parent.resolve()
+    if p == config_dir or config_dir in p.parents:
+        raise MoodleError(f"Refusing to upload {path}: the moodle-mcp config folder holds your token, passwords "
+                          "and keys.", "badupload")
     home = Path.home().resolve()
     for private in (home / "AppData", home / "Library"):
         if p == private or private in p.parents:
