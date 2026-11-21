@@ -143,7 +143,7 @@ curl -LsSf https://raw.githubusercontent.com/TheBeaconCrafter/moodle-mcp/main/sc
 irm https://raw.githubusercontent.com/TheBeaconCrafter/moodle-mcp/main/scripts/quickstart.ps1 | iex
 ```
 
-It installs uv and moodle-mcp if they're missing, signs you in to Moodle, lets you pick read-only or writes, downloads OpenAI's `tunnel-client` (checking its SHA-256 against the release), asks for your tunnel id and runtime API key, writes the tunnel profile, runs `tunnel-client doctor` and sets the tunnel up to start on its own (a systemd user service, a launchd agent, or a Windows Startup entry). If moodle-mcp is already installed, just run `moodle quickstart`. You can read the scripts in [`scripts/`](scripts) first if you'd rather not pipe them into a shell.
+It installs uv and moodle-mcp if they're missing, signs you in to Moodle, lets you pick read-only or writes, installs OpenAI's `tunnel-client` as a normal command you can use for other tunnels too (see [Installing and updating tunnel-client](docs/openai-tunnel.md#installing-and-updating-tunnel-client)), asks for your tunnel id and runtime API key, writes the tunnel profile, runs `tunnel-client doctor` and sets the tunnel up to start on its own (a systemd user service, a launchd agent, or a Windows Startup entry). If moodle-mcp is already installed, just run `moodle quickstart`. You can read the scripts in [`scripts/`](scripts) first if you'd rather not pipe them into a shell.
 
 Then, in ChatGPT, add a custom MCP server and choose **Tunnel** with your tunnel id. moodle-mcp also has a Streamable HTTP mode (`moodle-mcp --http`) for tunnel-client's HTTP option. It only starts with a shared secret in `MOODLE_MCP_HTTP_TOKEN` (16+ characters; the guide shows how to make one), or with an explicit `--no-auth`.
 
@@ -190,6 +190,7 @@ moodle news | notifications | search QUERY
 moodle functions [FILTER]             what your token can call
 moodle call WSFUNCTION '{"json": "params"}'
 moodle quickstart                     guided setup for ChatGPT (OpenAI tunnel)
+moodle tunnel [status|install|update] manage OpenAI's tunnel-client
 moodle status                         is the sign-in still good? (exits 1 if not)
 moodle auth [--url URL] [--password [--remember]]   sign in (token prompt, or Moodle password)
 moodle logout                         delete the saved token

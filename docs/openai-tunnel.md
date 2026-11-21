@@ -26,7 +26,7 @@ curl -LsSf https://raw.githubusercontent.com/TheBeaconCrafter/moodle-mcp/main/sc
 irm https://raw.githubusercontent.com/TheBeaconCrafter/moodle-mcp/main/scripts/quickstart.ps1 | iex
 ```
 
-It installs uv and moodle-mcp if they're missing, signs you in to Moodle, lets you pick read-only or writes, downloads OpenAI's `tunnel-client` (checking its SHA-256 against the release), asks for your tunnel id and runtime API key, writes the tunnel profile, runs `tunnel-client doctor` and sets the tunnel up to start on its own (a systemd user service, a launchd agent, or a Windows Startup entry). If moodle-mcp is already installed, just run `moodle quickstart`. You can read the scripts in [`scripts/`](../scripts) first if you'd rather not pipe them into a shell.
+It installs uv and moodle-mcp if they're missing, signs you in to Moodle, lets you pick read-only or writes, installs OpenAI's `tunnel-client` as a normal command you can use for other tunnels too (see [Installing and updating tunnel-client](#installing-and-updating-tunnel-client)), asks for your tunnel id and runtime API key, writes the tunnel profile, runs `tunnel-client doctor` and sets the tunnel up to start on its own (a systemd user service, a launchd agent, or a Windows Startup entry). If moodle-mcp is already installed, just run `moodle quickstart`. You can read the scripts in [`scripts/`](../scripts) first if you'd rather not pipe them into a shell.
 
 The sections below do the same by hand, and explain what the quickstart sets up.
 
@@ -38,9 +38,28 @@ The sections below do the same by hand, and explain what the quickstart sets up.
 - moodle-mcp installed and signed in. `moodle whoami` should print your name ([Quick start](../README.md#quick-start)). On a machine that runs unattended, read [step 5](#5-stay-signed-in) before you sign in.
 - A ChatGPT plan that lets you add custom MCP servers (or an OpenAI API project, if you use the Responses API).
 - A **tunnel id** (`tunnel_…`) and the **API key** that goes with it, created on the OpenAI side. OpenAI's [help article on custom MCP servers](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt) and the [tunnel-client end-user guide](https://github.com/openai/tunnel-client/blob/master/docs/end-user-guide.md) explain where to create them.
-- `tunnel-client` installed from its [releases page](https://github.com/openai/tunnel-client).
+- `tunnel-client` installed. `moodle tunnel install` does it for you (see [below](#installing-and-updating-tunnel-client)), or install it from its [releases page](https://github.com/openai/tunnel-client).
 
 Keep the tunnel API key the same way you keep your Moodle token: out of chats, repos and shell history. Put it in an environment file only you can read, as [step 4](#4-keep-it-running) does.
+
+### Installing and updating tunnel-client
+
+`moodle tunnel install` (or the quickstart) puts tunnel-client where you'd install it by hand, so the `tunnel-client` command works on its own and for other tunnels:
+
+| OS | Where | How it updates |
+| --- | --- | --- |
+| macOS | Homebrew, `openai/tools/tunnel-client`. OpenAI supports only this on macOS, because its release ZIPs aren't notarized | `brew upgrade` |
+| Linux | each version in `~/.local/share/tunnel-client/versions/<tag>/`, with `~/.local/bin/tunnel-client` linking to the current one | unpacks the new version and switches the link; the previous version stays for rollback |
+| Windows | `%LOCALAPPDATA%\Programs\tunnel-client`, added to your user PATH | renames the old files aside, so it works even while the tunnel runs |
+
+Downloads are checked against the SHA-256 in the release's `SHA256SUMS.txt` before anything is unpacked. The background service points at the stable command path, so it keeps working across updates.
+
+```bash
+moodle tunnel status    # installed version, where it lives, and whether a newer release exists
+moodle tunnel update    # install the newest release, then restart the moodle tunnel service
+```
+
+If tunnel-client was already installed some other way, moodle-mcp uses that copy and leaves updating it to you.
 
 ## 2. Connect the tunnel
 

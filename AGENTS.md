@@ -7,7 +7,7 @@ A Python package that exposes a student's Moodle account as MCP tools (stdio), p
 - `src/moodle_mcp/client.py`: the `Moodle` class. `call(wsfunction, **params)` is the only network path for API calls, and it flattens nested params via `_flatten`. Each helper method calls one or more web-service functions and returns plain dicts/lists trimmed to useful fields. Text helpers: `html_to_text`, `extract_text` (PDF/DOCX/PPTX/XLSX), `fmt_time`.
 - `src/moodle_mcp/server.py`: FastMCP tools. Each tool is a thin wrapper, `return _guard(lambda: m().<method>(...))`, so client creation and every error (with the token redacted) stay inside the guard. `moodle-mcp --http` serves Streamable HTTP on 127.0.0.1 for OpenAI's Secure MCP Tunnel. Read-only tools use `annotations=READ`.
 - `src/moodle_mcp/cli.py`: argparse front end over the same client.
-- `src/moodle_mcp/quickstart.py`: `moodle quickstart`, the guided ChatGPT tunnel setup (rich + questionary). `scripts/quickstart.sh` / `.ps1` install uv and moodle-mcp, then run it.
+- `src/moodle_mcp/quickstart.py`: `moodle quickstart`, the guided ChatGPT tunnel setup (rich + questionary). `scripts/quickstart.sh` / `.ps1` install uv and moodle-mcp, then run it. `src/moodle_mcp/tunnelclient.py`: installs and updates OpenAI's tunnel-client in its standard place per OS (`moodle tunnel status|install|update`).
 - `tests/`: offline tests using `httpx.MockTransport`. They never need a real token.
 - `docs/extending.md`: the step-by-step for adding a tool. `docs/openai-tunnel.md`: ChatGPT via OpenAI's Secure MCP Tunnel, running it as a service, and staying signed in.
 
@@ -25,5 +25,5 @@ A Python package that exposes a student's Moodle account as MCP tools (stdio), p
 - The server is read-only by default. A tool that writes to Moodle must call `_require_writes(...)` first, so it only works when the server runs with `--allow-writes` or `MOODLE_MCP_ALLOW_WRITES=1`.
 - This is a public repo. If you test against a real Moodle site, keep what you saw out of the repo: no site URLs, course names or ids, user names, file names or response samples in code, tests, docs or commit messages. Write fixes and tests from Moodle's documented API with made-up data (`moodle.example.edu`, `CHEM 111`).
 - File URLs must stay same-origin with the configured site before a token is attached; local paths from the model (downloads, uploads) must be confined and checked. `tests/test_security.py` covers these.
-- Keep it cross-platform (macOS, Windows, Linux): no `%-d` style strftime codes and no shell-outs. The one exception is `quickstart.py`, which has to run tunnel-client, systemctl and launchctl; keep it out of the server and client.
+- Keep it cross-platform (macOS, Windows, Linux): no `%-d` style strftime codes and no shell-outs. The exceptions are `quickstart.py` and `tunnelclient.py`, which have to run tunnel-client, brew, systemctl and launchctl; keep that out of the server and client.
 - The user restarts their Claude session to pick up server changes. An editable install (`uv tool install --force --editable .`) makes the commands run this checkout.
