@@ -34,8 +34,18 @@ There are two ways for tunnel-client to reach moodle-mcp. Use **stdio** unless y
 
 tunnel-client starts `moodle-mcp` itself and talks to it over stdin/stdout.
 
+First put the tunnel API key in an environment file only you can read. Creating the file with `install` makes it private from the start, and typing the key in an editor keeps it out of your shell history:
+
 ```bash
-export CONTROL_PLANE_API_KEY='…'          # better: load it from a file, see step 4
+install -d -m 700 ~/.config/moodle-mcp
+install -m 600 /dev/null ~/.config/moodle-mcp/tunnel.env
+"${EDITOR:-nano}" ~/.config/moodle-mcp/tunnel.env   # add one line: CONTROL_PLANE_API_KEY=your-key
+```
+
+Then load it and set up the profile:
+
+```bash
+set -a; . ~/.config/moodle-mcp/tunnel.env; set +a
 tunnel-client init --sample sample_mcp_stdio_local --profile moodle \
   --tunnel-id tunnel_0123456789abcdef0123456789abcdef \
   --mcp-command "moodle-mcp"
@@ -50,9 +60,9 @@ If tunnel-client can't find `moodle-mcp`, give the full path from `which moodle-
 Run moodle-mcp as a local HTTP server and point tunnel-client at it. A shared secret stops other programs on the same machine from using it.
 
 ```bash
-# once: make a random secret and keep it in a file only you can read
-python -c "import secrets; print(secrets.token_urlsafe(32))" > ~/.config/moodle-mcp/http-token
-chmod 600 ~/.config/moodle-mcp/http-token
+# once: make a random secret in a file only you can read (umask 077: private from the moment it exists)
+install -d -m 700 ~/.config/moodle-mcp
+(umask 077; python -c "import secrets; print(secrets.token_urlsafe(32))" > ~/.config/moodle-mcp/http-token)
 
 export MOODLE_MCP_HTTP_TOKEN="$(cat ~/.config/moodle-mcp/http-token)"
 export MOODLE_MCP_AUTH_HEADER="Bearer $MOODLE_MCP_HTTP_TOKEN"
@@ -90,15 +100,13 @@ Content from Moodle (forum posts, files, feedback) is written by other people, a
 
 ChatGPT can only reach moodle-mcp while tunnel-client is running. Only one tunnel-client may run per tunnel id, so start it from one place only.
 
-Each recipe below uses the stdio profile from Option A. Put the tunnel key in an environment file first:
+Each recipe below uses the stdio profile from Option A and reads the tunnel key from `~/.config/moodle-mcp/tunnel.env`. If you haven't made that file yet, create it the same way:
 
 ```bash
-mkdir -p ~/.config/moodle-mcp
-printf 'CONTROL_PLANE_API_KEY=%s\n' 'paste-key-here' > ~/.config/moodle-mcp/tunnel.env
-chmod 600 ~/.config/moodle-mcp/tunnel.env
+install -d -m 700 ~/.config/moodle-mcp
+install -m 600 /dev/null ~/.config/moodle-mcp/tunnel.env
+"${EDITOR:-nano}" ~/.config/moodle-mcp/tunnel.env   # add one line: CONTROL_PLANE_API_KEY=your-key
 ```
-
-(Edit the file in a text editor instead if you don't want the key in your shell history.)
 
 <details open>
 <summary><b>Linux (systemd user service)</b></summary>
@@ -154,7 +162,7 @@ Change `ExecStart` if `which tunnel-client` prints a different path.
   <dict><key>PATH</key><string>/Users/YOU/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardErrorPath</key><string>/tmp/moodle-tunnel.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/moodle-tunnel.log</string>
 </dict>
 </plist>
 ```

@@ -43,7 +43,15 @@ Find every file in my courses that mentions "midterm".
 
 ## Quick start
 
-You need [uv](https://docs.astral.sh/uv/), a fast Python installer. Skip this if you already have it.
+You need [uv](https://docs.astral.sh/uv/), a fast Python installer. Skip this if you already have it. A package manager you already use is the easiest way to get it:
+
+```bash
+brew install uv               # macOS (Homebrew)
+winget install astral-sh.uv   # Windows
+pipx install uv               # anywhere with pipx
+```
+
+Or use uv's own installer:
 
 ```bash
 # macOS / Linux
