@@ -7,7 +7,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from .client import Moodle, MoodleError, redact
+from .client import DOWNLOAD_ROOT, Moodle, MoodleError, redact
 
 mcp = FastMCP(
     "moodle",
@@ -125,9 +125,11 @@ def moodle_file_text(fileurl: str, offset: int = 0, max_chars: int = 40000) -> A
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True))
-def moodle_download(fileurl: str, dest_dir: str = "~/Downloads/Moodle") -> Any:
-    """Save a Moodle file to disk (default ~/Downloads/Moodle) and return the local path."""
-    return _guard(lambda: {"path": m().download(fileurl, dest_dir)})
+def moodle_download(fileurl: str, dest_dir: str = DOWNLOAD_ROOT) -> Any:
+    """Save a Moodle file (a `fileurl` from another tool) into ~/Downloads/Moodle and return the local path.
+    dest_dir may name a subfolder of ~/Downloads/Moodle (e.g. 'CHEM 111'); anything outside it is refused.
+    Existing files are never overwritten: a clash gets ' (1)', ' (2)'… added to the name."""
+    return _guard(lambda: {"path": m().download(fileurl, dest_dir, root=DOWNLOAD_ROOT)})
 
 
 @mcp.tool(annotations=READ)

@@ -160,3 +160,72 @@ def test_call_params_may_use_any_key_name(fake_moodle):
     c = fake_moodle(handler)
     c.call("core_x_get_y", fn=1, self=2, params=3)
     assert seen["fn"] == "1" and seen["self"] == "2" and seen["wsfunction"] == "core_x_get_y"
+
+
+# ---------------------------------------------------------------- downloads
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("/pluginfile.php/1/a/0/notes.pdf", "notes.pdf"),
+    ("/pluginfile.php/1/a/0/..%2f..%2f.bashrc", ".bashrc"),
+    ("/pluginfile.php/1/a/0/..%5c..%5cevil.txt", "evil.txt"),
+    ("/pluginfile.php/1/a/0/week%203%3Fv%3D2.pdf", "week 3_v=2.pdf"),
+    ("/pluginfile.php/1/a/0/CON.txt", "_CON.txt"),
+])
+def test_safe_filename(raw, expected):
+    assert mc.safe_filename(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["/pluginfile.php/1/a/0/..", "/pluginfile.php/1/a/0/%2e%2e", "/pluginfile.php/1/a/",
+                                 "/pluginfile.php/1/a/0/C%3Aevil.txt"])
+def test_safe_filename_rejects(raw):
+    with pytest.raises(mc.MoodleError):
+        mc.safe_filename(raw)
+
+
+def _file_server(body=b"data"):
+    return lambda req: httpx.Response(200, content=body, headers={"content-type": "application/octet-stream"})
+
+
+def test_download_cannot_escape_the_folder_and_never_overwrites(fake_moodle, tmp_path):
+    c = fake_moodle(_file_server(b"new"))
+    dest = tmp_path / "dl"
+    dest.mkdir()
+    (dest / ".bashrc").write_bytes(b"old")
+    url = f"{SITE}/pluginfile.php/1/mod_resource/content/0/..%2f..%2f.bashrc"
+    path = c.download(url, str(dest))
+    assert path == str(dest / ".bashrc (1)")
+    assert (dest / ".bashrc").read_bytes() == b"old"
+    assert not (tmp_path / ".bashrc").exists()
+    assert c.download(url, str(dest)).endswith(".bashrc (2)")
+
+
+def test_download_with_root_accepts_subfolders_and_rejects_outside(fake_moodle, tmp_path):
+    c = fake_moodle(_file_server())
+    root = tmp_path / "Moodle"
+    p = c.download(FILE, "CHEM 111", root=str(root))
+    assert p == str((root / "CHEM 111" / "week3.txt").resolve())
+    assert c.download(FILE, "CHEM 111", root=str(root)).endswith("week3 (1).txt")
+    assert c.download(FILE, str(root), root=str(root)) == str(root.resolve() / "week3.txt")
+    for bad in ("..", "../elsewhere", str(tmp_path), str(tmp_path / "other")):
+        with pytest.raises(mc.MoodleError) as e:
+            c.download(FILE, bad, root=str(root))
+        assert e.value.code == "baddest"
+
+
+def test_download_size_cap_removes_the_partial_file(fake_moodle, tmp_path, monkeypatch):
+    monkeypatch.setattr(mc, "DOWNLOAD_MAX_BYTES", 10)
+    c = fake_moodle(_file_server(b"x" * 100))
+    with pytest.raises(mc.MoodleError) as e:
+        c.download(FILE, str(tmp_path))
+    assert e.value.code == "toolarge"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_reports_moodle_json_errors(fake_moodle, tmp_path):
+    c = fake_moodle(lambda req: httpx.Response(200, json={"error": "No access", "errorcode": "nopermissions"},
+                                               headers={"content-type": "application/json"}))
+    with pytest.raises(mc.MoodleError) as e:
+        c.download(FILE, str(tmp_path))
+    assert e.value.code == "nopermissions"
+    assert list(tmp_path.iterdir()) == []

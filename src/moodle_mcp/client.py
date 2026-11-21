@@ -28,6 +28,8 @@ import httpx
 DEFAULT_URL = "https://moodle.trincoll.edu"
 CONFIG_PATH = Path(os.environ.get("MOODLE_MCP_CONFIG", "~/.config/moodle-mcp/config.json")).expanduser()
 MAX_FILE_REDIRECTS = 5
+DOWNLOAD_ROOT = "~/Downloads/Moodle"
+DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024  # 1 GB
 
 # httpx logs every request URL at INFO, and file downloads carry the token in the query string.
 # FastMCP turns INFO logging on, so keep these loggers quiet.
@@ -580,21 +582,38 @@ class Moodle:
         with closing(self._open_file(fileurl)) as r, self._net("file download"):
             data = r.read()
             ctype = r.headers.get("content-type", "")
-        if "application/json" in ctype and data[:1] == b"{":
-            try:
-                err = json.loads(data)
-            except ValueError:
-                err = {}
-            raise MoodleError(err.get("error") or err.get("message") or "File download failed", err.get("errorcode"))
+        if "application/json" in ctype:
+            _raise_if_moodle_error(data)
         name = unquote(Path(urlparse(fileurl).path).name)
         return data, ctype, name
 
-    def download(self, fileurl: str, dest: str = "~/Downloads/Moodle") -> str:
-        data, _, name = self.fetch_file(fileurl)
-        d = Path(dest).expanduser()
-        d.mkdir(parents=True, exist_ok=True)
-        path = d / name
-        path.write_bytes(data)
+    def download(self, fileurl: str, dest: str = DOWNLOAD_ROOT, root: str | None = None) -> str:
+        """Stream a Moodle file into `dest` and return the new file's path. Never overwrites: a clash gets
+        ` (1)`, ` (2)`… appended. With `root`, `dest` (absolute, or relative to root) must resolve inside root."""
+        d = _dest_dir(dest, root)
+        name = safe_filename(urlparse(fileurl).path)
+        with closing(self._open_file(fileurl)) as r, self._net("file download"):
+            ctype = r.headers.get("content-type", "")
+            if "application/json" in ctype:
+                data = _read_capped(r, DOWNLOAD_MAX_BYTES)
+                _raise_if_moodle_error(data)
+                chunks = iter([data])
+            else:
+                chunks = r.iter_bytes()
+            d.mkdir(parents=True, exist_ok=True)
+            path, fh = _create_unique(d, name)
+            try:
+                with fh:
+                    total = 0
+                    for chunk in chunks:
+                        total += len(chunk)
+                        if total > DOWNLOAD_MAX_BYTES:
+                            raise MoodleError(f"File is larger than {DOWNLOAD_MAX_BYTES // 2**20} MB; not saving it.",
+                                              "toolarge")
+                        fh.write(chunk)
+            except BaseException:
+                path.unlink(missing_ok=True)
+                raise
         return str(path)
 
     def file_text(self, fileurl: str) -> str:
@@ -641,6 +660,73 @@ class Moodle:
 
 
 # ---------------------------------------------------------------- helpers
+
+_UNSAFE_NAME_CHARS = re.compile(r'[\x00-\x1f<>:"|?*]')
+_WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
+def safe_filename(raw: str) -> str:
+    """A plain file name from a URL path: decoded first, then reduced to its last part, so `..%2f..%2fx` can't escape."""
+    name = unquote(raw).replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if re.match(r"^[A-Za-z]:", name):
+        raise MoodleError("Refusing a file name with a drive prefix.", "badfilename")
+    name = _UNSAFE_NAME_CHARS.sub("_", name).rstrip(". ")
+    if name in ("", ".", ".."):
+        raise MoodleError("The file URL has no usable file name.", "badfilename")
+    if name.split(".", 1)[0].upper() in _WINDOWS_RESERVED:
+        name = "_" + name
+    return name
+
+
+def _dest_dir(dest: str, root: str | None) -> Path:
+    d = Path(dest).expanduser()
+    if root is None:
+        return d
+    base = Path(root).expanduser()
+    if not d.is_absolute():
+        d = base / d
+    base_r, d_r = base.resolve(), d.resolve()
+    if d_r != base_r and base_r not in d_r.parents:
+        raise MoodleError(f"dest_dir must be inside {root} (give a subfolder name such as 'CHEM 111').", "baddest")
+    return d_r
+
+
+def _create_unique(d: Path, name: str):
+    """Create a new file in `d` without ever replacing one; returns (path, binary file handle)."""
+    stem, suffix = Path(name).stem, Path(name).suffix
+    d_r = d.resolve()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    for n in range(1000):
+        path = d / (name if n == 0 else f"{stem} ({n}){suffix}")
+        if path.resolve().parent != d_r:
+            raise MoodleError("Refusing to write outside the download folder.", "baddest")
+        try:
+            fd = os.open(path, flags, 0o644)
+        except FileExistsError:
+            continue
+        return path, os.fdopen(fd, "wb")
+    raise MoodleError(f"Too many files named {name} in {d}.", "baddest")
+
+
+def _read_capped(r: httpx.Response, limit: int) -> bytes:
+    buf = bytearray()
+    for chunk in r.iter_bytes():
+        buf += chunk
+        if len(buf) > limit:
+            raise MoodleError(f"File is larger than {limit // 2**20} MB.", "toolarge")
+    return bytes(buf)
+
+
+def _raise_if_moodle_error(data: bytes) -> None:
+    """pluginfile.php reports errors (bad token, no access) as a JSON body instead of the file."""
+    if data[:1] != b"{":
+        return
+    try:
+        err = json.loads(data)
+    except ValueError:
+        return
+    if isinstance(err, dict) and ("error" in err or "exception" in err or "errorcode" in err):
+        raise MoodleError(err.get("error") or err.get("message") or "File download failed", err.get("errorcode"))
 
 def _u(s):
     return html.unescape(s) if isinstance(s, str) else s
