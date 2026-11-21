@@ -296,7 +296,7 @@ Moodle tokens often expire after a few months. moodle-mcp copes in three ways:
 
 - **No restart needed.** When Moodle rejects the token, a running server re-reads the config, so `moodle auth` in a terminal fixes it on the spot.
 - **Early warning.** `moodle status` shows the token's age and exits 1 once it stops working, so you can run it from cron or Task Scheduler.
-- **Automatic renewal** on sites where you sign in to Moodle with a username and password (not SSO). Install the `keyring` extra and run `moodle auth --password --remember`. The password goes into your system keychain, and moodle-mcp fetches a new token by itself whenever the old one expires.
+- **Automatic renewal** on sites where you sign in to Moodle with a username and password (not SSO). Run `moodle auth --password --remember`. The password goes into your system keychain (or, on a machine without one, a file only you can read), and moodle-mcp fetches a new token by itself whenever the old one expires.
 
 [docs/openai-tunnel.md](docs/openai-tunnel.md#5-stay-signed-in) has the details, including headless servers and SSO sites.
 

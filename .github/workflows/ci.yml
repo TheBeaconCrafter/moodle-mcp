@@ -25,7 +25,6 @@ jobs:
         with:
           version: "0.13.7"
           python-version: ${{ matrix.python }}
-      # --all-extras installs the optional keyring extra so that code path is exercised too.
       - run: uv run --frozen --all-extras pytest -q
 
   lint:

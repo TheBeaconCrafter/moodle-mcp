@@ -241,18 +241,16 @@ Run it on a schedule so you hear about an expired token from your own machine fi
 If your school signs you in to Moodle with a **Moodle username and password**, not single sign-on (SSO) through Microsoft, Google or a campus login page, moodle-mcp can get a new token by itself whenever the old one expires:
 
 ```bash
-# once: install the optional keychain support
-uv tool install --force "moodle-mcp[keyring] @ git+https://github.com/TheBeaconCrafter/moodle-mcp"
-
 moodle auth --password --remember        # asks for username and password (hidden)
 moodle status                            # "Auto-renew: on"
 ```
 
 - The password goes into your operating system's keychain (macOS Keychain, Windows Credential Manager, or the Secret Service on Linux desktops), never into `config.json`.
+- **No keychain?** Headless Linux servers usually have none. Then moodle-mcp writes the password to `~/.config/moodle-mcp/password` by itself: created with mode `600` in a `700` folder, so only your user account can read it. `moodle auth` tells you which of the two it used.
 - When Moodle rejects the token, moodle-mcp signs in through `login/token.php` with the remembered password, saves the new token and retries the request.
 - `moodle logout`, or a later `moodle auth` without `--remember`, removes the remembered password.
 
-**Headless Linux servers** often have no keychain. Keep the password in a file only you can read and tell moodle-mcp where it is. With systemd you can hand it over as a credential:
+**Your own password file (optional).** If you'd rather manage the file yourself, for example to hand it to a systemd service as a credential, point `MOODLE_MCP_PASSWORD_FILE` at it:
 
 ```bash
 install -m 600 /dev/null ~/.config/moodle-mcp/password
@@ -266,7 +264,7 @@ Environment=MOODLE_MCP_PASSWORD_FILE=%h/.config/moodle-mcp/password
 
 Then sign in once with `MOODLE_MCP_PASSWORD_FILE=~/.config/moodle-mcp/password moodle auth --password --remember`. With the variable set, nothing is written to a keychain.
 
-On macOS and Linux, moodle-mcp refuses a password file that belongs to another user or that group/other can read or write (anything looser than `chmod 600`); `moodle status` says why auto-renew is off. Windows has no such permission bits, so there it isn't checked: keep the file inside your user profile folder. `moodle logout` never deletes this file, because you manage it.
+On macOS and Linux, moodle-mcp refuses a password file that belongs to another user or that group/other can read or write (anything looser than `chmod 600`); `moodle status` says why auto-renew is off. Windows has no such permission bits, so there it isn't checked: keep the file inside your user profile folder. `moodle logout` never deletes a `MOODLE_MCP_PASSWORD_FILE`, because you manage it; it does delete the automatic `~/.config/moodle-mcp/password`.
 
 > [!IMPORTANT]
 > A remembered password is worth more to an attacker than a token, which you can reset from the Security keys page. Only use auto-renew on a machine you trust, and leave the server read-only.
