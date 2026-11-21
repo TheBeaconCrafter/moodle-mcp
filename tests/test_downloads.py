@@ -21,9 +21,14 @@ def droot(monkeypatch, tmp_path):
 
 
 def _download(path, days_ago, monkeypatch=None):
+    """Save a file the way moodle_download does: any folder it has to make is reported as created."""
+    created, cur = [], path.parent
+    while not cur.exists():
+        created.insert(0, str(cur))
+        cur = cur.parent
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"pdf")
-    downloads.record(path, now=time.time() - days_ago * DAY)
+    downloads.record(path, now=time.time() - days_ago * DAY, created_dirs=created)
 
 
 def test_old_downloads_are_deleted_and_empty_folders_pruned(droot, monkeypatch):
@@ -107,7 +112,7 @@ def test_server_download_tool_tracks_the_file(droot, monkeypatch):
     class Fake:
         token = "t" * 32
 
-        def download(self, fileurl, dest, root=None):
+        def download(self, fileurl, dest, root=None, created_dirs=None):
             target.write_bytes(b"pdf")
             return str(target)
 
@@ -115,3 +120,134 @@ def test_server_download_tool_tracks_the_file(droot, monkeypatch):
     out = server.moodle_download("https://moodle.example.edu/pluginfile.php/1/x/reading.pdf")
     assert out == {"path": str(target), "auto_delete_after_days": 7}
     assert [e["path"] for e in downloads.tracked()] == [str(target)]
+
+
+
+# ---------------------------------------------------------------- only the very file that was downloaded is deleted
+
+
+def test_same_size_edit_with_the_same_mtime_is_kept(droot):
+    f = droot / "essay.docx"
+    _download(f, 30)
+    st = f.stat()
+    f.write_bytes(b"PDF")  # same size
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))
+    res = downloads.cleanup()
+    assert res["removed"] == [] and res["kept_edited"] == [str(f)] and f.exists()
+
+
+def test_a_replacement_file_with_matching_metadata_is_kept(droot):
+    f = droot / "notes.pdf"
+    _download(f, 30)
+    st = f.stat()
+    other = droot / "other.pdf"
+    other.write_bytes(b"pdf")
+    os.utime(other, ns=(st.st_atime_ns, st.st_mtime_ns))
+    os.replace(other, f)  # same name, size, mtime and content, but a different file
+    assert downloads.cleanup()["removed"] == [] and f.exists()
+
+
+def test_manifest_entries_without_an_identity_never_delete(droot):
+    mine = droot / "mine.pdf"
+    mine.write_bytes(b"pdf")
+    st = mine.stat()
+    downloads._save({"files": [{"path": str(mine), "size": st.st_size, "mtime": st.st_mtime, "saved_at": 0},
+                               {"path": "", "saved_at": 0}, {"path": str(droot), "saved_at": 0}],
+                     "dirs": [{"path": str(droot)}], "last_cleanup": 0})
+    downloads.cleanup(everything=True)
+    assert mine.exists() and droot.exists()
+
+
+def test_folders_you_made_are_never_pruned(droot):
+    yours = droot / "Mine"
+    yours.mkdir()
+    empty = droot / "Empty"
+    empty.mkdir()
+    _download(yours / "a.pdf", 30)
+    _download(droot / "CHEM 111" / "Week 1" / "b.pdf", 30)
+    assert len(downloads.cleanup()["removed"]) == 2
+    assert yours.exists() and empty.exists() and not (droot / "CHEM 111").exists()
+
+
+def test_a_created_folder_with_your_files_in_it_stays(droot):
+    _download(droot / "CHEM 111" / "a.pdf", 30)
+    (droot / "CHEM 111" / "my notes.txt").write_text("mine")
+    downloads.cleanup()
+    assert (droot / "CHEM 111" / "my notes.txt").exists()
+
+
+def _link_dir(link, target):
+    """A directory symlink, or on Windows a junction; skip the test if neither can be made here."""
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        pass
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+        return
+    pytest.skip("can't create a directory link here")
+
+
+def test_a_folder_swapped_for_a_link_redirects_nothing(droot, tmp_path):
+    f = droot / "CHEM 111" / "lab.pdf"
+    _download(f, 30)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "lab.pdf"
+    victim.write_bytes(b"pdf")
+    (droot / "CHEM 111" / "lab.pdf").unlink()
+    (droot / "CHEM 111").rmdir()
+    _link_dir(droot / "CHEM 111", outside)
+    # Even if the identity check were fooled, the path check refuses anything behind a link.
+    assert downloads._checked(droot / "CHEM 111" / "lab.pdf", droot.resolve()) is None
+    downloads.cleanup(everything=True)
+    assert victim.exists() and outside.exists()
+
+
+def test_a_symlinked_file_is_never_followed(droot, tmp_path):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep")
+    link = droot / "link.pdf"
+    try:
+        os.symlink(victim, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("can't create a symlink here")
+    assert downloads._checked(link, droot.resolve()) is None
+    downloads.record(link)
+    assert downloads.tracked() == [] and victim.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_a_manifest_others_can_write_is_ignored(droot):
+    f = droot / "a.pdf"
+    _download(f, 30)
+    downloads.manifest_path().chmod(0o666)
+    assert downloads.tracked() == []
+    downloads.cleanup()
+    assert f.exists()
+
+
+def test_manifest_updates_wait_for_the_lock(droot, monkeypatch):
+    monkeypatch.setattr(downloads, "LOCK_TIMEOUT", 0.1)
+    f = droot / "a.pdf"
+    _download(f, 30)
+    with mc.file_lock(downloads.manifest_path()):
+        assert downloads.maybe_cleanup() is None  # couldn't get the lock: nothing happens, nothing raised
+        downloads.record(droot / "a.pdf")  # never raises
+    assert f.exists()
+    assert downloads.cleanup()["removed"] == [str(f)]
+
+
+def test_client_download_reports_the_folders_it_created(fake_moodle, tmp_path):
+    import httpx
+
+    c = fake_moodle(lambda r: httpx.Response(200, content=b"pdf", headers={"content-type": "application/pdf"}))
+    base = tmp_path / "dl"
+    (base / "existing").mkdir(parents=True)
+    created = []
+    c.download("https://moodle.example.edu/pluginfile.php/1/mod_resource/content/1/a.pdf",
+               "existing/new/deeper", root=str(base), created_dirs=created)
+    assert created == [str((base / "existing" / "new").resolve()), str((base / "existing" / "new" / "deeper").resolve())]

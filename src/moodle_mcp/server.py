@@ -160,8 +160,9 @@ def moodle_download(fileurl: str, dest_dir: str = DOWNLOAD_ROOT) -> Any:
     Downloads are deleted automatically after a few days (MOODLE_MCP_DOWNLOAD_DAYS, default 7) unless the user
     edits or moves them; mention that when you give the user the path."""
     def run():
-        path = m().download(fileurl, dest_dir, root=DOWNLOAD_ROOT)
-        downloads.record(path)
+        created: list[str] = []
+        path = m().download(fileurl, dest_dir, root=DOWNLOAD_ROOT, created_dirs=created)
+        downloads.record(path, created_dirs=created)
         downloads.maybe_cleanup()
         days = downloads.retention_days()
         return {"path": path, "auto_delete_after_days": days or None}

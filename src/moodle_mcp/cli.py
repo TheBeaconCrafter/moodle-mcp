@@ -155,7 +155,10 @@ def cmd_downloads(args) -> None:
     days = downloads.retention_days()
     policy = f"deleted after {days:g} days" if days > 0 else "kept (automatic clean-up is off)"
     if args.action == "clean":
-        res = downloads.cleanup(everything=args.all)
+        try:
+            res = downloads.cleanup(everything=args.all)
+        except MoodleError as e:
+            sys.exit(f"✗ {e}")
         if args.json:
             return _print(res)
         for p in res["removed"]:

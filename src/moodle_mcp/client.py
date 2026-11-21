@@ -144,14 +144,21 @@ LOCK_STALE_SECONDS = 60.0
 
 @contextmanager
 def config_lock(timeout: float | None = None):
-    """Hold a cross-process lock on the config file while reading-then-writing it.
+    """Hold a cross-process lock on the config file while reading-then-writing it (see file_lock)."""
+    with file_lock(CONFIG_PATH, timeout):
+        yield
 
-    The lock is a file next to the config created with O_CREAT|O_EXCL; a lock older than LOCK_STALE_SECONDS
+
+@contextmanager
+def file_lock(target: Path, timeout: float | None = None):
+    """Hold a cross-process lock on `target` (a file in the config folder) while reading-then-writing it.
+
+    The lock is a file `<target>.lock` created with O_CREAT|O_EXCL; a lock older than LOCK_STALE_SECONDS
     is treated as left behind by a crashed process and taken over. Raises MoodleError("locked") after
     `timeout` seconds (default LOCK_TIMEOUT)."""
-    folder = CONFIG_PATH.parent
+    folder = target.parent
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    lock = CONFIG_PATH.with_name(CONFIG_PATH.name + ".lock")
+    lock = target.with_name(target.name + ".lock")
     deadline = time.monotonic() + (LOCK_TIMEOUT if timeout is None else timeout)
     while True:
         try:
@@ -171,7 +178,7 @@ def config_lock(timeout: float | None = None):
                     pass
                 continue
             if time.monotonic() >= deadline:
-                raise MoodleError(f"Another moodle-mcp process is updating {CONFIG_PATH}; try again in a moment "
+                raise MoodleError(f"Another moodle-mcp process is updating {target}; try again in a moment "
                                   f"(or delete {lock} if nothing else is running).", "locked") from None
             time.sleep(0.05)
             continue
@@ -1131,9 +1138,11 @@ class Moodle:
         name = unquote(Path(urlparse(fileurl).path).name)
         return data, ctype, name
 
-    def download(self, fileurl: str, dest: str = DOWNLOAD_ROOT, root: str | None = None) -> str:
+    def download(self, fileurl: str, dest: str = DOWNLOAD_ROOT, root: str | None = None,
+                 created_dirs: list[str] | None = None) -> str:
         """Stream a Moodle file into `dest` and return the new file's path. Never overwrites: a clash gets
-        ` (1)`, ` (2)`… appended. With `root`, `dest` (absolute, or relative to root) must resolve inside root."""
+        ` (1)`, ` (2)`… appended. With `root`, `dest` (absolute, or relative to root) must resolve inside root.
+        Folders this call creates are appended to `created_dirs` (outermost first), if given."""
         d = _dest_dir(dest, root)
         name = safe_filename(urlparse(fileurl).path)
         with closing(self._open_file(fileurl)) as r, self._net("file download"):
@@ -1149,7 +1158,14 @@ class Moodle:
                         break
                 _raise_if_moodle_error(bytes(head))
                 chunks = itertools.chain([bytes(head)], chunks)
+            missing = []
+            cur = d
+            while not cur.exists() and cur.parent != cur:
+                missing.append(cur)
+                cur = cur.parent
             d.mkdir(parents=True, exist_ok=True)
+            if created_dirs is not None:
+                created_dirs.extend(str(x) for x in reversed(missing))
             path, fh = _create_unique(d, name)
             try:
                 with fh:
