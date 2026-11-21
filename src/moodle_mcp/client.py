@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import html
 import io
+import itertools
 import json
 import logging
 import os
@@ -31,6 +32,7 @@ MAX_FILE_REDIRECTS = 5
 DOWNLOAD_ROOT = "~/Downloads/Moodle"
 DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024  # 1 GB
 UPLOAD_MAX_BYTES = 100 * 1024 * 1024
+JSON_PROBE_BYTES = 64 * 1024  # how much of a JSON download is read to spot a Moodle error body
 FETCH_MAX_BYTES = 50 * 1024 * 1024  # files read into memory for their text
 ZIP_MAX_PARTS = 500  # slides in a .pptx
 ZIP_MAX_BYTES = 100 * 1024 * 1024  # total unpacked XML read from a .docx/.pptx/.xlsx
@@ -973,11 +975,13 @@ class Moodle:
         """GET a Moodle file as a streamed response (wrap it in `closing()`).
 
         Redirects are followed by hand, at most MAX_FILE_REDIRECTS times, and only to pluginfile.php URLs on
-        the same site that pass the same path checks as the original URL."""
+        the same site that pass the same path checks as the original URL. `Accept-Encoding: identity` keeps the
+        size caps honest: a gzip body could otherwise expand far past them before a byte is counted."""
         url = self._file_url(fileurl)
         for _ in range(MAX_FILE_REDIRECTS + 1):
             with self._net("file download"):
-                r = self.http.send(self.http.build_request("GET", url), stream=True)
+                r = self.http.send(self.http.build_request("GET", url, headers={"Accept-Encoding": "identity"}),
+                                   stream=True)
             if r.is_redirect:
                 location = r.headers.get("location", "")
                 r.close()
@@ -1012,12 +1016,17 @@ class Moodle:
         name = safe_filename(urlparse(fileurl).path)
         with closing(self._open_file(fileurl)) as r, self._net("file download"):
             ctype = r.headers.get("content-type", "")
+            chunks = r.iter_bytes()
             if "application/json" in ctype:
-                data = _read_capped(r, DOWNLOAD_MAX_BYTES)
-                _raise_if_moodle_error(data)
-                chunks = iter([data])
-            else:
-                chunks = r.iter_bytes()
+                # pluginfile.php reports errors as a small JSON body. Look at the first JSON_PROBE_BYTES only;
+                # a real .json file of any size is then streamed to disk like everything else.
+                head = bytearray()
+                for chunk in chunks:
+                    head += chunk
+                    if len(head) > JSON_PROBE_BYTES:
+                        break
+                _raise_if_moodle_error(bytes(head))
+                chunks = itertools.chain([bytes(head)], chunks)
             d.mkdir(parents=True, exist_ok=True)
             path, fh = _create_unique(d, name)
             try:

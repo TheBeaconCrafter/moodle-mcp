@@ -871,3 +871,42 @@ def test_download_gets_a_mark_of_the_web(fake_moodle, tmp_path):
         pytest.skip("filesystem without alternate data streams")
     assert "ZoneId=3" in zone and f"HostUrl={FILE}" in zone
     assert "token" not in zone and "forcedownload" not in zone
+
+
+# ---------------------------------------------------------------- download buffering and encoding
+
+
+def test_json_download_is_streamed_not_buffered(fake_moodle, tmp_path, monkeypatch):
+    monkeypatch.setattr(mc, "JSON_PROBE_BYTES", 16)
+    body = b"[" + b"1," * 5000 + b"1]"
+    reads = []
+    real = mc._read_capped
+    monkeypatch.setattr(mc, "_read_capped", lambda r, limit: reads.append(limit) or real(r, limit))
+    c = fake_moodle(lambda req: httpx.Response(200, content=body, headers={"content-type": "application/json"}))
+    path = c.download(FILE.replace("week3.txt", "data.json"), str(tmp_path))
+    assert open(path, "rb").read() == body and reads == []
+
+
+def test_json_download_still_catches_moodle_errors(fake_moodle, tmp_path):
+    err = b'{"error":"Invalid token","errorcode":"invalidtoken"}'
+    c = fake_moodle(lambda req: httpx.Response(200, content=err, headers={"content-type": "application/json"}))
+    with pytest.raises(mc.MoodleError) as e:
+        c.download(FILE, str(tmp_path))
+    assert e.value.code == "invalidtoken" and list(tmp_path.iterdir()) == []
+
+
+def test_json_download_respects_the_size_cap(fake_moodle, tmp_path, monkeypatch):
+    monkeypatch.setattr(mc, "DOWNLOAD_MAX_BYTES", 100)
+    monkeypatch.setattr(mc, "JSON_PROBE_BYTES", 16)
+    c = fake_moodle(lambda req: httpx.Response(200, content=b"[" + b"1," * 200 + b"1]",
+                                               headers={"content-type": "application/json"}))
+    with pytest.raises(mc.MoodleError) as e:
+        c.download(FILE, str(tmp_path))
+    assert e.value.code == "toolarge" and list(tmp_path.iterdir()) == []
+
+
+def test_file_requests_ask_for_no_compression(fake_moodle):
+    seen = []
+    c = fake_moodle(lambda req: seen.append(req.headers.get("accept-encoding")) or httpx.Response(200, content=b"x"))
+    c.fetch_file(FILE)
+    assert seen == ["identity"]
