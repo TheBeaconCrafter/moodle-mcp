@@ -377,11 +377,21 @@ class _TextExtractor(HTMLParser):
         self.hidden_tag: str | None = None
         self.hidden_depth = 0
 
-    @staticmethod
-    def _is_hidden(attrs) -> bool:
+    # Bootstrap/Moodle classes that hide an element from everyone (sr-only / visually-hidden stay: screen readers
+    # read those, so they're part of the page).
+    HIDDEN_CLASSES = {"d-none", "hidden", "invisible"}
+
+    @classmethod
+    def _is_hidden(cls, attrs) -> bool:
         a = {k.lower(): (v or "") for k, v in attrs}
-        style = re.sub(r"\s+", "", a.get("style", "").lower())
-        return "hidden" in a or "display:none" in style or "visibility:hidden" in style
+        style = re.sub(r"/\*.*?\*/", "", a.get("style", "").lower(), flags=re.DOTALL)  # CSS comments split words
+        style = re.sub(r"\s+", "", style)
+        if "hidden" in a or a.get("aria-hidden", "").strip().lower() == "true":
+            return True
+        if cls.HIDDEN_CLASSES & set(a.get("class", "").lower().split()):
+            return True
+        return ("display:none" in style or "visibility:hidden" in style
+                or re.search(r"(?:^|;)font-size:0*\.?0+(?:[a-z%]*)(?:!important)?(?:;|$)", style) is not None)
 
     def handle_starttag(self, tag, attrs):
         if self.hidden_tag is not None:

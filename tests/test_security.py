@@ -910,3 +910,33 @@ def test_file_requests_ask_for_no_compression(fake_moodle):
     c = fake_moodle(lambda req: seen.append(req.headers.get("accept-encoding")) or httpx.Response(200, content=b"x"))
     c.fetch_file(FILE)
     assert seen == ["identity"]
+
+
+@pytest.mark.parametrize("html", [
+    "<div style='display:/**/none'>SECRET</div>",
+    "<div style='display: /* x */ none'>SECRET</div>",
+    "<div style='visibility:/*a*/hidden'>SECRET</div>",
+    "<div aria-hidden='true'>SECRET</div>",
+    "<div aria-hidden='TRUE'>SECRET</div>",
+    "<span style='font-size:0'>SECRET</span>",
+    "<span style='font-size: 0px'>SECRET</span>",
+    "<span style='color:red; font-size:0em !important'>SECRET</span>",
+    "<div class='d-none'>SECRET</div>",
+    "<div class='alert hidden'>SECRET</div>",
+    "<p class='Invisible x'>SECRET</p>",
+])
+def test_more_hidden_elements_are_dropped(html):
+    text = mc.html_to_text(html + "<p>shown</p>")
+    assert "SECRET" not in text and "shown" in text
+
+
+@pytest.mark.parametrize("html", [
+    "<span class='sr-only'>kept</span>",
+    "<span class='visually-hidden'>kept</span>",
+    "<span aria-hidden='false'>kept</span>",
+    "<span style='font-size:10px'>kept</span>",
+    "<span style='font-size:0.9em'>kept</span>",
+    "<div class='hiddenish'>kept</div>",
+])
+def test_visible_or_screen_reader_text_is_kept(html):
+    assert "kept" in mc.html_to_text(html)
