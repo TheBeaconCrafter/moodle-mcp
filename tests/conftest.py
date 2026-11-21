@@ -11,6 +11,10 @@ def isolated_config(tmp_path, monkeypatch):
     monkeypatch.setattr(mc, "CONFIG_PATH", path)
     monkeypatch.delenv("MOODLE_URL", raising=False)
     monkeypatch.delenv("MOODLE_TOKEN", raising=False)
+    for var in ("MOODLE_MCP_PASSWORD_FILE", "MOODLE_MCP_UPLOAD_DIRS", "MOODLE_MCP_HTTP_TOKEN", "MOODLE_MCP_ALLOW_WRITES"):
+        monkeypatch.delenv(var, raising=False)
+    # Never touch the real OS keychain, even with the keyring extra installed; tests that need one fake it.
+    monkeypatch.setattr(mc, "_keyring", lambda: None)
     return path
 
 
