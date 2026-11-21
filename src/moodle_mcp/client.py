@@ -1175,18 +1175,41 @@ def is_read_only_function(wsfunction: str) -> bool:
     return not (set(checked) & _WRITE_WORDS)
 
 
+_WINDOWS_HIDDEN_OR_SYSTEM = 0x2 | 0x4  # FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
+
+
 def upload_roots() -> list[Path]:
-    """Folders submissions may upload from: MOODLE_MCP_UPLOAD_DIRS (os.pathsep-separated), else the home folder."""
+    """Folders submissions may upload from: MOODLE_MCP_UPLOAD_DIRS (os.pathsep-separated), else the user's
+    Documents, Desktop and Downloads folders that exist (including OneDrive's Documents/Desktop on Windows)."""
     raw = os.environ.get("MOODLE_MCP_UPLOAD_DIRS", "")
-    dirs = [d.strip() for d in raw.split(os.pathsep) if d.strip()] or [str(Path.home())]
-    return [Path(d).expanduser().resolve() for d in dirs]
+    dirs = [Path(d.strip()).expanduser() for d in raw.split(os.pathsep) if d.strip()]
+    if not dirs:
+        home = Path.home()
+        dirs = [d for d in (home / "Documents", home / "Desktop", home / "Downloads",
+                            home / "OneDrive" / "Documents", home / "OneDrive" / "Desktop") if d.is_dir()]
+    out: list[Path] = []
+    for d in dirs:
+        r = d.resolve()
+        if r not in out:
+            out.append(r)
+    return out
+
+
+def _hidden_or_system(path: Path) -> bool:
+    """True for a Windows file or folder marked hidden or system (always False elsewhere)."""
+    try:
+        return bool(getattr(os.stat(path), "st_file_attributes", 0) & _WINDOWS_HIDDEN_OR_SYSTEM)
+    except OSError:
+        return False
 
 
 def check_upload_path(path: str) -> Path:
     """Resolve a file the user wants to submit and refuse anything that looks like it shouldn't leave the machine.
 
     The file must be a regular file of at most UPLOAD_MAX_BYTES inside an upload root, with no hidden
-    (dot-named) folder or file below that root, and must not be this tool's own config file."""
+    (dot-named, or on Windows hidden/system-attributed) folder or file below that root. It must not be in
+    ~/AppData or ~/Library (application data, browser profiles, keychains), and must not be this tool's
+    config file or the MOODLE_MCP_PASSWORD_FILE."""
     try:
         p = Path(path).expanduser().resolve(strict=True)
     except (OSError, RuntimeError):
@@ -1195,14 +1218,29 @@ def check_upload_path(path: str) -> Path:
         raise MoodleError(f"Not a regular file: {path}", "badupload")
     if p == CONFIG_PATH.expanduser().resolve():
         raise MoodleError("Refusing to upload the moodle-mcp config file (it holds your token).", "badupload")
-    root = next((r for r in upload_roots() if p == r or r in p.parents), None)
+    pw_file = os.environ.get("MOODLE_MCP_PASSWORD_FILE", "").strip()
+    if pw_file and p == Path(pw_file).expanduser().resolve():
+        raise MoodleError("Refusing to upload the MOODLE_MCP_PASSWORD_FILE (it holds your password).", "badupload")
+    home = Path.home().resolve()
+    for private in (home / "AppData", home / "Library"):
+        if p == private or private in p.parents:
+            raise MoodleError(f"Refusing to upload {path}: files under {private} hold application data.", "badupload")
+    roots = upload_roots()
+    root = next((r for r in roots if p == r or r in p.parents), None)
     if root is None:
-        raise MoodleError(f"Refusing to upload {path}: it is outside the allowed folders "
-                          f"({', '.join(str(r) for r in upload_roots())}). Set MOODLE_MCP_UPLOAD_DIRS to change them.",
-                          "badupload")
-    if any(part.startswith(".") for part in p.relative_to(root).parts):
+        allowed = ", ".join(str(r) for r in roots) or "none found"
+        raise MoodleError(f"Refusing to upload {path}: it is outside the allowed folders ({allowed}). "
+                          "Set MOODLE_MCP_UPLOAD_DIRS to change them.", "badupload")
+    rel = p.relative_to(root).parts
+    if any(part.startswith(".") for part in rel):
         raise MoodleError(f"Refusing to upload {path}: hidden files and folders (names starting with '.') "
                           "are off limits.", "badupload")
+    cur = root
+    for part in rel:
+        cur = cur / part
+        if _hidden_or_system(cur):
+            raise MoodleError(f"Refusing to upload {path}: it is (or is inside) a hidden or system file/folder.",
+                              "badupload")
     size = p.stat().st_size
     if size > UPLOAD_MAX_BYTES:
         raise MoodleError(f"{p.name} is {size // 2**20} MB; the upload limit is {UPLOAD_MAX_BYTES // 2**20} MB.",

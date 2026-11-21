@@ -1,6 +1,7 @@
 """Offline tests for the security hardening: none of these need a real Moodle or token."""
 
 import logging
+import os
 
 import httpx
 import pytest
@@ -304,8 +305,11 @@ def test_download_reports_moodle_json_errors(fake_moodle, tmp_path):
 
 @pytest.fixture
 def upload_root(tmp_path, monkeypatch):
+    from pathlib import Path
+
     root = tmp_path / "home"
     root.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: root)  # keep the real ~/AppData (where tmp_path lives) out of it
     monkeypatch.setenv("MOODLE_MCP_UPLOAD_DIRS", str(root))
     return root
 
@@ -382,10 +386,74 @@ def test_submission_checks_every_file_before_uploading(fake_moodle, upload_root)
     assert seen == []
 
 
-def test_upload_roots_default_to_home(monkeypatch):
-    monkeypatch.delenv("MOODLE_MCP_UPLOAD_DIRS", raising=False)
+def test_upload_roots_default_to_documents_desktop_downloads(monkeypatch, tmp_path):
     from pathlib import Path
-    assert mc.upload_roots() == [Path.home().resolve()]
+
+    home = tmp_path / "home"
+    for name in ("Documents", "Downloads", "Music"):
+        (home / name).mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.delenv("MOODLE_MCP_UPLOAD_DIRS", raising=False)
+    assert mc.upload_roots() == [(home / "Documents").resolve(), (home / "Downloads").resolve()]
+    f = home / "notes.txt"
+    f.write_bytes(b"x")
+    with pytest.raises(mc.MoodleError) as e:
+        mc.check_upload_path(str(f))  # the home folder itself is no longer allowed
+    assert e.value.code == "badupload"
+    ok = home / "Documents" / "essay.docx"
+    ok.write_bytes(b"x")
+    assert mc.check_upload_path(str(ok)) == ok.resolve()
+
+
+def test_upload_dirs_env_overrides_the_defaults(monkeypatch, tmp_path):
+    monkeypatch.setenv("MOODLE_MCP_UPLOAD_DIRS", str(tmp_path))
+    assert mc.upload_roots() == [tmp_path.resolve()]
+
+
+@pytest.mark.parametrize("rel", ["AppData/Roaming/Mozilla/Firefox/key4.db", "Library/Keychains/login.keychain-db",
+                                 "AppData/x.txt"])
+def test_upload_refuses_app_data_even_inside_a_root(upload_root, rel):
+    f = upload_root / rel
+    f.parent.mkdir(parents=True)
+    f.write_bytes(b"secret")
+    with pytest.raises(mc.MoodleError) as e:
+        mc.check_upload_path(str(f))
+    assert e.value.code == "badupload"
+
+
+def test_upload_refuses_the_password_file(upload_root, monkeypatch):
+    pw = upload_root / "pw.txt"
+    pw.write_text("hunter2")
+    monkeypatch.setenv("MOODLE_MCP_PASSWORD_FILE", str(pw))
+    with pytest.raises(mc.MoodleError) as e:
+        mc.check_upload_path(str(pw))
+    assert "PASSWORD_FILE" in str(e.value)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows file attributes")
+@pytest.mark.parametrize("attr", [0x2, 0x4])
+def test_upload_refuses_windows_hidden_or_system_items(upload_root, attr):
+    import ctypes
+
+    folder = upload_root / "proj"
+    folder.mkdir()
+    f = folder / "a.txt"
+    f.write_bytes(b"x")
+    assert mc.check_upload_path(str(f))
+    assert ctypes.windll.kernel32.SetFileAttributesW(str(folder), attr | 0x10)
+    try:
+        with pytest.raises(mc.MoodleError):
+            mc.check_upload_path(str(f))
+    finally:
+        ctypes.windll.kernel32.SetFileAttributesW(str(folder), 0x10)
+    g = upload_root / "b.txt"
+    g.write_bytes(b"x")
+    assert ctypes.windll.kernel32.SetFileAttributesW(str(g), attr)
+    try:
+        with pytest.raises(mc.MoodleError):
+            mc.check_upload_path(str(g))
+    finally:
+        ctypes.windll.kernel32.SetFileAttributesW(str(g), 0x80)
 
 
 # ---------------------------------------------------------------- moodle_call gating
