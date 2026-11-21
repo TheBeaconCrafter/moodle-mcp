@@ -69,6 +69,23 @@ def load_config() -> dict:
     return cfg
 
 
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def check_site_url(url: str) -> str:
+    """Normalise a Moodle site URL and insist on https (plain http only for a Moodle on this machine)."""
+    url = (url or "").strip().rstrip("/")
+    u = urlparse(url)
+    if not u.scheme or not u.hostname or "@" in u.netloc or u.query or u.fragment:
+        raise MoodleError(f"{url!r} is not a Moodle site URL (expected something like https://moodle.school.edu).",
+                          "badurl")
+    scheme = u.scheme.lower()
+    if scheme != "https" and not (scheme == "http" and u.hostname.lower() in _LOCAL_HOSTS):
+        raise MoodleError(f"The Moodle site URL must start with https:// (got {url}); the token would travel "
+                          "unencrypted otherwise.", "badurl")
+    return url
+
+
 def clear_config() -> bool:
     if CONFIG_PATH.exists():
         CONFIG_PATH.unlink()
@@ -174,7 +191,7 @@ def _flatten(prefix: str, value: Any, out: dict) -> None:
 class Moodle:
     def __init__(self, url: str | None = None, token: str | None = None):
         cfg = load_config()
-        self.url = (url or cfg["url"]).rstrip("/")
+        self.url = check_site_url(url or cfg["url"])
         self.token = token or cfg.get("token")
         if not self.token:
             raise MoodleError(

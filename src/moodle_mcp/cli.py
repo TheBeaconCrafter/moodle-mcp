@@ -12,6 +12,7 @@ from .client import (
     DEFAULT_URL,
     Moodle,
     MoodleError,
+    check_site_url,
     clear_config,
     load_config,
     parse_token,
@@ -39,7 +40,10 @@ The token is stored in {path} (readable only by you).
 
 def cmd_auth(args) -> None:
     cfg = load_config()
-    url = (args.url or cfg.get("url") or DEFAULT_URL).rstrip("/")
+    try:
+        url = check_site_url(args.url or cfg.get("url") or DEFAULT_URL)
+    except MoodleError as e:
+        sys.exit(f"✗ {e}")
     print(AUTH_HELP.format(url=url, path=CONFIG_PATH))
     raw = getpass.getpass("Paste token or launch link (hidden): ")
     try:

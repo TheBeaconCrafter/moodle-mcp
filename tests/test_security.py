@@ -365,3 +365,33 @@ def test_moodle_call_blocks_writes_unless_allowed(monkeypatch):
     monkeypatch.setenv("MOODLE_MCP_ALLOW_RAW_WRITES", "1")
     assert server.moodle_call("mod_assign_save_submission", {"assignmentid": 1}) == {"ok": True}
     assert calls == ["core_course_get_contents", "mod_assign_save_submission"]
+
+
+# ---------------------------------------------------------------- https only
+
+
+@pytest.mark.parametrize("url", ["https://moodle.example.edu", "https://moodle.example.edu/", "HTTPS://m.example.edu/moodle",
+                                 "http://localhost:8080", "http://127.0.0.1/moodle", "http://[::1]:8000"])
+def test_site_url_accepts_https_and_local_http(url):
+    assert mc.Moodle(url=url, token=TOKEN).url == url.rstrip("/")
+
+
+@pytest.mark.parametrize("url", ["http://moodle.example.edu", "http://localhost.evil.com", "ftp://moodle.example.edu",
+                                 "moodle.example.edu", "https://user:pw@moodle.example.edu", "https://", ""])
+def test_site_url_rejects_plain_http_and_junk(url):
+    with pytest.raises(mc.MoodleError) as e:
+        mc.check_site_url(url)
+    assert e.value.code == "badurl"
+
+
+def test_auth_refuses_http_before_asking_for_the_token(monkeypatch):
+    from moodle_mcp import cli
+
+    def no_prompt(*a, **k):
+        raise AssertionError("should not prompt")
+
+    monkeypatch.setattr(cli.getpass, "getpass", no_prompt)
+    monkeypatch.setattr("sys.argv", ["moodle", "auth", "--url", "http://moodle.example.edu"])
+    with pytest.raises(SystemExit) as e:
+        cli.main()
+    assert "https" in str(e.value.code)
