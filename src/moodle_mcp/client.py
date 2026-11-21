@@ -21,7 +21,7 @@ from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse, urlsplit, urlunsplit
 
 import httpx
 
@@ -78,6 +78,9 @@ def load_config() -> dict:
     return cfg
 
 
+# Characters and escapes that let a URL path mean something other than what it says once a server decodes it.
+_BAD_URL_CHARS = re.compile(r"[\x00-\x1f\x7f\\]")
+_ENCODED_DOT_SLASH = re.compile(r"%(2e|2f|5c)", re.IGNORECASE)
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
@@ -771,28 +774,48 @@ class Moodle:
         return (bool(u.scheme) and bool(u.netloc) and "@" not in u.netloc
                 and u.scheme.lower() == site.scheme.lower() and u.netloc.lower() == site.netloc.lower())
 
+    def _check_file_path(self, url: str, what: str = "badfileurl") -> None:
+        """Insist that `url`'s path is a plain pluginfile.php path directly under the configured site's path.
+
+        Checked on the raw text, before httpx normalises anything: no backslashes, control characters,
+        `.`/`..` segments or percent-encoded dots/slashes (which servers may decode into those), and the
+        path must start with <site path>/pluginfile.php/ or <site path>/webservice/pluginfile.php/."""
+        if _BAD_URL_CHARS.search(url):
+            raise MoodleError("Refusing a file URL with backslashes or control characters.", what)
+        path = urlsplit(url).path
+        if _ENCODED_DOT_SLASH.search(path):
+            raise MoodleError("Refusing a file URL with encoded dots or slashes in its path.", what)
+        if any(seg in (".", "..") for seg in path.split("/")):
+            raise MoodleError("Refusing a file URL with . or .. in its path.", what)
+        site_path = urlsplit(self.url).path.rstrip("/")
+        if not (path.startswith(f"{site_path}/pluginfile.php/") or path.startswith(f"{site_path}/webservice/pluginfile.php/")):
+            raise MoodleError("That is not a Moodle file URL on your site (expected …/pluginfile.php/…).", what)
+
     def _file_url(self, fileurl: str) -> str:
         """The token-bearing download URL for a Moodle `fileurl`, after checking it belongs to this site.
 
-        Only pluginfile.php URLs on the configured site get the token; anything else could hand it to a
-        third party (a file URL can come from a teacher-written page or a forum post)."""
-        u = urlparse(fileurl.strip())
-        if not self._same_origin(fileurl.strip()):
+        Only pluginfile.php URLs under the configured site get the token; anything else could hand it to a
+        third party or another app on the same host (a file URL can come from a teacher-written page or a
+        forum post)."""
+        fileurl = fileurl.strip()
+        if not self._same_origin(fileurl):
             raise MoodleError("Refusing to fetch a file from outside your Moodle site. "
                               "Pass a fileurl returned by another moodle_* tool.", "badfileurl")
-        if "/pluginfile.php/" not in u.path:
-            raise MoodleError("That is not a Moodle file URL (expected …/pluginfile.php/…).", "badfileurl")
+        self._check_file_path(fileurl)
+        u = urlsplit(fileurl)
+        site_path = urlsplit(self.url).path.rstrip("/")
         path = u.path
-        if "/webservice/pluginfile.php/" not in path:
-            path = path.replace("/pluginfile.php/", "/webservice/pluginfile.php/", 1)
+        if path.startswith(f"{site_path}/pluginfile.php/"):
+            path = f"{site_path}/webservice{path[len(site_path):]}"
         query = [(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True) if k not in ("token", "wstoken")]
         query.append(("token", self.token))
-        return urlunparse((u.scheme, u.netloc, path, u.params, urlencode(query), ""))
+        return urlunsplit((u.scheme, u.netloc, path, urlencode(query), ""))
 
     def _open_file(self, fileurl: str) -> httpx.Response:
         """GET a Moodle file as a streamed response (wrap it in `closing()`).
 
-        Redirects are followed by hand, at most MAX_FILE_REDIRECTS times and only within the same site."""
+        Redirects are followed by hand, at most MAX_FILE_REDIRECTS times, and only to pluginfile.php URLs on
+        the same site that pass the same path checks as the original URL."""
         url = self._file_url(fileurl)
         for _ in range(MAX_FILE_REDIRECTS + 1):
             with self._net("file download"):
@@ -800,9 +823,14 @@ class Moodle:
             if r.is_redirect:
                 location = r.headers.get("location", "")
                 r.close()
+                loc_path = urlsplit(location).path
+                if (_BAD_URL_CHARS.search(location) or _ENCODED_DOT_SLASH.search(loc_path)
+                        or any(seg in (".", "..") for seg in loc_path.split("/"))):
+                    raise MoodleError("The file download redirected to a suspicious URL; not following it.", "redirect")
                 url = urljoin(url, location)
                 if not self._same_origin(url):
                     raise MoodleError("The file download redirected to another site; not following it.", "redirect")
+                self._check_file_path(url, "redirect")
                 continue
             if r.status_code >= 400:
                 r.close()

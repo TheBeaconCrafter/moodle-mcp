@@ -37,6 +37,70 @@ def test_file_url_must_be_a_pluginfile_on_the_configured_site(fake_moodle, url):
     assert seen == []
 
 
+@pytest.mark.parametrize("url", [
+    f"{SITE}/pluginfile.php/../../steal",
+    f"{SITE}/pluginfile.php/1/../../../steal",
+    f"{SITE}/pluginfile.php/./1/x.pdf",
+    f"{SITE}/pluginfile.php/1/%2e%2e/%2E%2E/steal",
+    f"{SITE}/pluginfile.php/1%2f..%2fx",
+    f"{SITE}/pluginfile.php/1/%5c..%5Cx",
+    f"{SITE}/pluginfile.php/1\\..\\x.pdf",
+    f"{SITE}/pluginfile.php/1/x.pdf\x00.txt",
+    f"{SITE}/pluginfile.php/1/x\r\n.pdf",
+    f"{SITE}/other/pluginfile.php/1/x.pdf",
+    f"{SITE}/login/pluginfile.php/1/x.pdf",
+])
+def test_file_url_path_must_be_a_plain_pluginfile_path(fake_moodle, url):
+    seen = []
+    c = fake_moodle(lambda req: seen.append(req) or httpx.Response(200, content=b"x"))
+    with pytest.raises(mc.MoodleError) as e:
+        c.fetch_file(url)
+    assert e.value.code == "badfileurl" and seen == []
+
+
+@pytest.mark.parametrize("url", [
+    "https://moodle.example.edu/~mallory/pluginfile.php/1/x.pdf",
+    "https://moodle.example.edu/pluginfile.php/1/x.pdf",
+    "https://moodle.example.edu/Moodle/pluginfile.php/1/x.pdf",
+    "https://moodle.example.edu/moodle/../pluginfile.php/1/x.pdf",
+    "https://moodle.example.edu/moodlex/pluginfile.php/1/x.pdf",
+])
+def test_sub_path_site_only_trusts_its_own_pluginfile(url):
+    seen = []
+    c = mc.Moodle(url="https://moodle.example.edu/moodle", token=TOKEN)
+    c.http = httpx.Client(transport=httpx.MockTransport(lambda req: seen.append(req) or httpx.Response(200)))
+    with pytest.raises(mc.MoodleError) as e:
+        c.fetch_file(url)
+    assert e.value.code == "badfileurl" and seen == []
+
+
+def test_sub_path_site_rewrites_to_its_webservice_pluginfile():
+    c = mc.Moodle(url="https://moodle.example.edu/moodle", token=TOKEN)
+    url = c._file_url("https://moodle.example.edu/moodle/pluginfile.php/1/x.pdf")
+    assert url.startswith("https://moodle.example.edu/moodle/webservice/pluginfile.php/1/x.pdf?token=")
+    assert c._file_url("https://moodle.example.edu/moodle/webservice/pluginfile.php/1/x.pdf").count("webservice") == 1
+
+
+@pytest.mark.parametrize("location", [
+    "/pluginfile.php/../../steal",
+    "../../../steal",
+    "/login/index.php",
+    "/webservice/pluginfile.php/1/%2e%2e/x",
+    "/webservice/pluginfile.php/1\\..\\x",
+])
+def test_file_redirects_get_the_same_path_checks(fake_moodle, location):
+    seen = []
+
+    def handler(req):
+        seen.append(req.url.path)
+        return httpx.Response(302, headers={"location": location}) if len(seen) == 1 else httpx.Response(200)
+
+    c = fake_moodle(handler)
+    with pytest.raises(mc.MoodleError) as e:
+        c.fetch_file(FILE)
+    assert e.value.code == "redirect" and len(seen) == 1
+
+
 def test_file_url_host_comparison_ignores_case(fake_moodle):
     c = fake_moodle(lambda req: httpx.Response(200, content=b"hello", headers={"content-type": "text/plain"}))
     data, _, name = c.fetch_file("HTTPS://Moodle.Example.EDU/pluginfile.php/1/mod_resource/content/0/week3.txt")
@@ -193,7 +257,10 @@ def test_download_cannot_escape_the_folder_and_never_overwrites(fake_moodle, tmp
     dest = tmp_path / "dl"
     dest.mkdir()
     (dest / ".bashrc").write_bytes(b"old")
-    url = f"{SITE}/pluginfile.php/1/mod_resource/content/0/..%2f..%2f.bashrc"
+    with pytest.raises(mc.MoodleError) as e:
+        c.download(f"{SITE}/pluginfile.php/1/mod_resource/content/0/..%2f..%2f.bashrc", str(dest))
+    assert e.value.code == "badfileurl"
+    url = f"{SITE}/pluginfile.php/1/mod_resource/content/0/.bashrc"
     path = c.download(url, str(dest))
     assert path == str(dest / ".bashrc (1)")
     assert (dest / ".bashrc").read_bytes() == b"old"
