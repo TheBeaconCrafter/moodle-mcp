@@ -225,6 +225,8 @@ def main() -> None:
     sub.add_parser("logout", parents=[common], help="delete the saved token (and any remembered password) from this computer")
     sub.add_parser("status", parents=[common], help="check the saved sign-in still works; exits 1 if not")
     sub.add_parser("quickstart", help="guided setup: sign in and connect ChatGPT through OpenAI's tunnel")
+    s = sub.add_parser("tunnel", help="install, update or check OpenAI's tunnel-client")
+    s.add_argument("action", choices=["status", "install", "update"], nargs="?", default="status")
     sub.add_parser("whoami", parents=[common], help="check the connection")
     s = sub.add_parser("functions", parents=[common], help="list the web-service functions your token can call")
     s.add_argument("match", nargs="?", help="only names containing this text")
@@ -259,6 +261,9 @@ def main() -> None:
         return cmd_auth(args)
     if args.cmd == "logout":
         return cmd_logout(args)
+    if args.cmd == "tunnel":
+        from .tunnelclient import cmd_tunnel
+        sys.exit(cmd_tunnel(args.action))
     if args.cmd == "quickstart":
         from .quickstart import main as quickstart_main
         return quickstart_main()

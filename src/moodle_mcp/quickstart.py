@@ -4,19 +4,17 @@ Walks through every step in an interactive terminal UI and asks before it change
 
 1. sign in to Moodle (password with auto-renew where the site allows it, otherwise a token);
 2. choose read-only or writes;
-3. download tunnel-client from github.com/openai/tunnel-client and check its SHA-256;
+3. install or update OpenAI's tunnel-client in its standard place (see tunnelclient.py);
 4. store the OpenAI runtime API key in a private file and write a tunnel-client profile;
 5. run `tunnel-client doctor`;
 6. install a background service (systemd user unit / launchd agent / Windows Startup entry), or run now.
 
-This is the one module that starts other programs (tunnel-client, systemctl, launchctl, wscript);
-the MCP server and client never do.
+This module and tunnelclient.py are the only ones that start other programs (tunnel-client, brew,
+systemctl, launchctl, wscript); the MCP server and client never do.
 """
 
 from __future__ import annotations
 
-import hashlib
-import io
 import json
 import os
 import platform
@@ -25,13 +23,13 @@ import shutil
 import subprocess
 import sys
 import webbrowser
-import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 
 from . import client
+from . import tunnelclient as tc
 from .client import (
     Moodle,
     MoodleError,
@@ -45,15 +43,13 @@ from .client import (
     remember_password,
 )
 
-RELEASES_API = "https://api.github.com/repos/openai/tunnel-client/releases/latest"
 TUNNELS_URL = "https://platform.openai.com/settings/organization/tunnels"
 API_KEYS_URL = "https://platform.openai.com/settings/organization/api-keys"
 CONNECTORS_URL = "https://chatgpt.com/#settings/Connectors"
 PROFILE_NAME = "moodle"
-SERVICE_NAME = "moodle-tunnel"
-LAUNCHD_LABEL = "com.moodle-mcp.tunnel"
+SERVICE_NAME = tc.SERVICE_NAME
+LAUNCHD_LABEL = tc.LAUNCHD_LABEL
 TUNNEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{5,127}")
-MAX_ZIP_BYTES = 300 * 1024 * 1024
 
 
 # ---------------------------------------------------------------- paths and pure helpers (tested)
@@ -61,7 +57,7 @@ MAX_ZIP_BYTES = 300 * 1024 * 1024
 @dataclass(frozen=True)
 class Paths:
     config_dir: Path
-    bin_dir: Path
+    tunnel_client: Path  # the stable command path (survives tunnel-client updates)
 
     @property
     def profile_dir(self) -> Path:
@@ -75,67 +71,9 @@ class Paths:
     def key_file(self) -> Path:
         return self.config_dir / "tunnel-runtime.key"
 
-    @property
-    def tunnel_client(self) -> Path:
-        return self.bin_dir / ("tunnel-client.exe" if os.name == "nt" else "tunnel-client")
 
-
-def default_paths() -> Paths:
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-        bin_dir = base / "moodle-mcp" / "tunnel-client"
-    else:
-        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
-        bin_dir = base / "moodle-mcp" / "tunnel-client"
-    return Paths(config_dir=client.CONFIG_PATH.parent, bin_dir=bin_dir)
-
-
-def platform_slug(system: str | None = None, machine: str | None = None) -> str:
-    """tunnel-client's release naming: linux|darwin|windows - amd64|arm64."""
-    system = (system or platform.system()).lower()
-    machine = (machine or platform.machine()).lower()
-    os_part = {"linux": "linux", "darwin": "darwin", "windows": "windows"}.get(system)
-    arch = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(machine)
-    if not os_part or not arch:
-        raise MoodleError(f"tunnel-client has no build for {system}/{machine}. Install it by hand from "
-                          "https://github.com/openai/tunnel-client/releases.", "unsupported")
-    return f"{os_part}-{arch}"
-
-
-def asset_name(tag: str, slug: str) -> str:
-    return f"tunnel-client-{tag}-{slug}.zip"
-
-
-def parse_sha256sums(text: str) -> dict[str, str]:
-    out = {}
-    for line in text.splitlines():
-        parts = line.strip().split()
-        if len(parts) == 2 and re.fullmatch(r"[0-9a-fA-F]{64}", parts[0]):
-            out[parts[1].lstrip("*")] = parts[0].lower()
-    return out
-
-
-def extract_release(data: bytes, dest: Path) -> Path:
-    """Unpack the release zip's top-level files into dest (no sub-paths, so nothing can escape it)."""
-    dest.mkdir(parents=True, exist_ok=True)
-    exe = None
-    with zipfile.ZipFile(io.BytesIO(data)) as z:
-        for info in z.infolist():
-            name = info.filename.replace("\\", "/")
-            if info.is_dir() or "/" in name or name in ("", ".", ".."):
-                continue
-            target = dest / name
-            with z.open(info) as src, open(target, "wb") as out:
-                shutil.copyfileobj(src, out)
-            if name in ("tunnel-client", "tunnel-client.exe"):
-                exe = target
-    if exe is None:
-        raise MoodleError("The tunnel-client download didn't contain the tunnel-client program.", "badrelease")
-    if os.name != "nt":
-        for f in dest.iterdir():
-            if f.name in ("tunnel-client", "cloudflared"):
-                f.chmod(0o755)
-    return exe
+def default_paths(tunnel_client: Path | None = None) -> Paths:
+    return Paths(config_dir=client.CONFIG_PATH.parent, tunnel_client=tunnel_client or tc.command_path())
 
 
 def mcp_command(moodle_mcp: str, allow_writes: bool) -> str:
@@ -346,54 +284,40 @@ def step_writes(ui: UI) -> bool:
     ]) == "rw"
 
 
-def find_tunnel_client(paths: Paths) -> Path | None:
-    if paths.tunnel_client.exists():
-        return paths.tunnel_client
-    found = shutil.which("tunnel-client")
-    return Path(found) if found else None
-
-
-def download_tunnel_client(ui: UI, paths: Paths) -> Path:
-    slug = platform_slug()
-    with httpx.Client(timeout=httpx.Timeout(30, read=120), follow_redirects=True,
-                      headers={"User-Agent": "moodle-mcp-quickstart", "Accept": "application/vnd.github+json"}) as h:
-        with ui.spin("Looking up the latest tunnel-client release…"):
-            rel = h.get(RELEASES_API)
-            rel.raise_for_status()
-            rel = rel.json()
-            tag = rel["tag_name"]
-            assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
-            name = asset_name(tag, slug)
-            if name not in assets or "SHA256SUMS.txt" not in assets:
-                raise MoodleError(f"Release {tag} has no {name}. Install tunnel-client by hand.", "badrelease")
-            sums = parse_sha256sums(h.get(assets["SHA256SUMS.txt"]).raise_for_status().text)
-        with ui.spin(f"Downloading {name}…"):
-            r = h.get(assets[name])
-            r.raise_for_status()
-            if len(r.content) > MAX_ZIP_BYTES:
-                raise MoodleError("The tunnel-client download is unexpectedly large.", "badrelease")
-        digest = hashlib.sha256(r.content).hexdigest()
-        if sums.get(name) != digest:
-            raise MoodleError(f"{name} doesn't match the SHA-256 published in SHA256SUMS.txt; not installing it.",
-                              "badchecksum")
-        ui.ok(f"Checked SHA-256 against the release's SHA256SUMS.txt ({digest[:16]}…).")
-        exe = extract_release(r.content, paths.bin_dir)
-    ui.ok(f"Installed tunnel-client {tag} to {paths.bin_dir}")
-    return exe
-
-
-def step_tunnel_client(ui: UI, paths: Paths) -> Path:
-    exe = find_tunnel_client(paths)
-    if exe:
-        ui.ok(f"tunnel-client found: {exe}")
-        if not ui.confirm("Use it? (No downloads the latest release instead)", default=True):
-            exe = None
-    if exe is None:
-        if not ui.confirm(f"Download OpenAI's tunnel-client from github.com/openai/tunnel-client into "
-                          f"{paths.bin_dir}?", default=True):
-            raise Abort()
-        exe = download_tunnel_client(ui, paths)
-    return exe
+def step_tunnel_client(ui: UI) -> Path:
+    """Find tunnel-client, offer to update it, or install it in its standard place. Returns the command path."""
+    with ui.spin("Looking for tunnel-client…"):
+        current = tc.find()
+    say = ui.ok
+    if current:
+        ui.ok(f"tunnel-client {current.version or '?'} found at {current.path} (managed by {current.manager}).")
+        if current.manager == "other":
+            ui.info("It was installed some other way, so update it the same way when you want to.")
+            return current.path
+        if current.manager == "homebrew":
+            if ui.confirm("Run `brew upgrade` for it now?", default=False):
+                with ui.spin("Updating with Homebrew…"):
+                    current = tc.install_or_update(say)
+            return current.path
+        with ui.spin("Checking for a newer release…"):
+            rel = tc.latest_release()
+        if tc.version_tuple(rel.version) <= tc.version_tuple(current.version):
+            ui.ok("It's the latest release.")
+            return current.path
+        if ui.confirm(f"Update it to {rel.tag}?", default=True):
+            with ui.spin(f"Updating to {rel.tag}…"):
+                current = tc.install_or_update(say)
+            tc.restart_service(ui.info)
+        return current.path
+    where = ("with Homebrew (brew install openai/tools/tunnel-client)" if platform.system() == "Darwin"
+             else f"to {tc.install_root()}, with the `tunnel-client` command at {tc.command_path()}")
+    ui.info("tunnel-client is installed like any other command line tool, so you can use it for other tunnels "
+            "and update it later with `moodle tunnel update`.")
+    if not ui.confirm(f"Install OpenAI's tunnel-client {where}?", default=True):
+        raise Abort()
+    with ui.spin("Installing tunnel-client…"):
+        installed = tc.install_or_update(say)
+    return installed.path
 
 
 def step_openai(ui: UI, paths: Paths) -> str:
@@ -571,7 +495,7 @@ def main(argv: list[str] | None = None) -> None:
         ui.step(2, total, "Read-only or writes")
         allow_writes = step_writes(ui)
         ui.step(3, total, "OpenAI tunnel-client")
-        paths = Paths(paths.config_dir, step_tunnel_client(ui, paths).parent)
+        paths = default_paths(step_tunnel_client(ui))
         ui.step(4, total, "Tunnel id and API key")
         tunnel_id = step_openai(ui, paths)
         step_profile(ui, paths, tunnel_id, allow_writes)
