@@ -1,6 +1,9 @@
 """The quickstart's non-interactive parts: the tunnel-client profile command and the service files."""
 
+import json
 from pathlib import Path
+
+import pytest
 
 from moodle_mcp import quickstart as qs
 
@@ -41,3 +44,73 @@ def test_service_files_run_the_profile_without_secrets(tmp_path):
     assert "<key>KeepAlive</key><true/>" in qs.launchd_plist(paths, tmp_path / "log")
     vbs = qs.windows_launcher(Path("C:/Users/x/run-tunnel.ps1"))
     assert vbs.startswith('CreateObject("WScript.Shell").Run "powershell.exe') and ", 0, False" in vbs
+
+
+class _FakeUI:
+    """Answers the quickstart's questions from a list and records what it shows."""
+
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.shown = []
+
+    def _next(self, *a, **k):
+        return self.answers.pop(0)
+
+    text = secret = select = confirm = _next
+
+    def info(self, t):
+        self.shown.append(t)
+
+    ok = warn = err = info
+
+    def spin(self, _):
+        import contextlib
+        return contextlib.nullcontext()
+
+
+def _password_site(monkeypatch, password, whoami=None):
+    from moodle_mcp import client as mc
+
+    monkeypatch.setattr(qs, "app_login_type", lambda url: 1)
+
+    def login(url, user, pw):
+        if pw != password:
+            raise mc.MoodleError(f"Password sign-in failed: wrong password {pw}", "invalidlogin")
+        return "n" * 32
+    monkeypatch.setattr(qs, "password_login", login)
+    monkeypatch.setattr(qs.Moodle, "whoami", whoami or (lambda self: {"fullname": "Sam", "site": "Example"}))
+
+
+def test_quickstart_errors_never_show_the_typed_password(monkeypatch):
+    from moodle_mcp import client as mc
+
+    _password_site(monkeypatch, "right password")
+    ui = _FakeUI(["https://moodle.example.edu", "password", "s1", "typed secret", False])
+    with pytest.raises(qs.Abort):
+        qs.step_moodle(ui)
+    assert any("wrong password ***" in s for s in ui.shown)
+    assert not any("typed secret" in s for s in ui.shown) and not mc.CONFIG_PATH.exists()
+
+
+def test_quickstart_does_not_offer_to_remember_with_a_broken_password_file(monkeypatch, tmp_path):
+    from moodle_mcp import client as mc
+
+    _password_site(monkeypatch, "right password")
+    monkeypatch.setenv("MOODLE_MCP_PASSWORD_FILE", str(tmp_path / "missing"))
+    ui = _FakeUI(["https://moodle.example.edu", "password", "s1", "right password"])  # no remember question
+    qs.step_moodle(ui)
+    assert any("won't be remembered" in s for s in ui.shown)
+    assert "remember" not in json.loads(mc.CONFIG_PATH.read_text())
+
+
+def test_quickstart_remembers_only_after_the_sign_in_is_checked(monkeypatch):
+    from moodle_mcp import client as mc
+
+    def rejected(self):
+        raise mc.MoodleError("Invalid token", "invalidtoken")
+    _password_site(monkeypatch, "right password", whoami=rejected)
+    monkeypatch.setattr(mc, "_keyring", lambda: None)
+    ui = _FakeUI(["https://moodle.example.edu", "password", "s1", "right password", False])
+    with pytest.raises(qs.Abort):
+        qs.step_moodle(ui)
+    assert not mc.default_password_file().exists() and not mc.CONFIG_PATH.exists()

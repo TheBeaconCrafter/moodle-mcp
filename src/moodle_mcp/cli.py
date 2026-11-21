@@ -6,6 +6,7 @@ import argparse
 import getpass
 import json
 import os
+import shlex
 import sys
 import time
 
@@ -27,6 +28,7 @@ from .client import (
     remember_password,
     safe_code,
     save_config,
+    site_id,
 )
 
 AUTH_HELP = """\
@@ -48,16 +50,27 @@ on Windows it lives in your profile folder).
 """
 
 
-def store_sign_in(url: str, token: str, username: str | None = None, remember: bool = False) -> None:
-    """Save a checked token (and, with remember, the account whose password was remembered) under the
-    config lock, forgetting the password of a different account saved before."""
-    extra = {"username": username, "remember": True} if remember and username else {}
-    with config_lock():
-        old = load_config()
-        if old.get("username") and old.get("username") != extra.get("username"):
-            forget_password(old.get("url", url), old["username"])
-        save_config({"url": url, "token": token, "saved_at": int(time.time()), **extra})
+def store_sign_in(url: str, token: str, username: str | None = None, password: str | None = None,
+                  remember: bool = False) -> str | None:
+    """Save a checked token under the config lock. Call it only after the sign-in has been checked.
 
+    Forgets the remembered password of the account saved before when that is a different site or username.
+    With remember (and a password), remembers the new password and records the account in the same locked
+    step; a password sign-in without remember forgets any password remembered for this account. Returns
+    where the password went, or None."""
+    remember = bool(remember and username and password)
+    where = None
+    with config_lock():
+        old = read_saved_config() or {}
+        if old.get("username") and (site_id(old.get("url")), old["username"]) != (site_id(url), username):
+            forget_password(old.get("url") or url, old["username"])
+        if remember:
+            where = remember_password(url, username, password)
+        elif username and password is not None:
+            forget_password(url, username)
+        extra = {"username": username, "remember": True} if remember else {}
+        save_config({"url": url, "token": token, "saved_at": int(time.time()), **extra})
+    return where
 
 def cmd_auth(args) -> None:
     cfg = load_config()
@@ -69,28 +82,20 @@ def cmd_auth(args) -> None:
         url = check_site_url(raw_url)
     except MoodleError as e:
         sys.exit(f"✗ {e}")
-    extra: dict = {}
     if args.remember and not args.password:
         sys.exit("✗ --remember only works with --password (a pasted token can't be renewed automatically).")
+    username = password = None
     if args.password:
+        if args.remember:
+            problem = password_file_problem(include_auto=False)
+            if problem:
+                sys.exit(f"✗ {problem}")
         username = (args.username or input(f"Moodle username for {url}: ")).strip()
         password = getpass.getpass("Moodle password (hidden): ")
         try:
             token = password_login(url, username, password)
         except MoodleError as e:
             sys.exit(redact(f"✗ {e}", password))
-        if args.remember:
-            problem = password_file_problem()
-            if problem:
-                sys.exit(f"✗ {problem}")
-            try:
-                where = remember_password(url, username, password)
-            except MoodleError as e:
-                sys.exit(f"✗ {e}")
-            extra = {"username": username, "remember": True}
-            print(f"✓ Password saved in {where}. The token will renew itself when it expires.")
-        else:
-            forget_password(url, username)
     else:
         print(AUTH_HELP.format(url=url, path=client.CONFIG_PATH))
         raw = getpass.getpass("Paste token or launch link (hidden): ")
@@ -98,20 +103,23 @@ def cmd_auth(args) -> None:
             token = parse_token(raw)
         except ValueError as e:
             sys.exit(f"✗ {e}")
+    # Check the new sign-in before anything is remembered or saved: a failure leaves the old setup untouched.
     try:
         who = Moodle(url=url, token=token).whoami()
     except MoodleError as e:
         hint = ""
         if e.code == "invalidtoken" and app_login_type(url) == 1:
             hint = ("\n  This site signs the Moodle app in with a username and password, so try:\n"
-                    f"    moodle auth --url {url} --password")
-        sys.exit(redact(f"✗ Moodle rejected that token: {e}{hint}", token))
+                    f"    moodle auth --url {shlex.quote(url)} --password")
+        sys.exit(redact(redact(f"✗ Moodle rejected that token: {e}{hint}", token), password))
     except Exception as e:
-        sys.exit(redact(f"✗ Couldn't check that token: {type(e).__name__}: {e}", token))
+        sys.exit(redact(redact(f"✗ Couldn't check that token: {type(e).__name__}: {e}", token), password))
     try:
-        store_sign_in(url, token, **extra)
-    except MoodleError as e:
-        sys.exit(f"✗ {e}")
+        where = store_sign_in(url, token, username=username, password=password, remember=args.remember)
+    except (MoodleError, OSError) as e:
+        sys.exit(redact(redact(f"✗ {e}", token), password))
+    if where:
+        print(f"✓ Password saved in {where}. The token will renew itself when it expires.")
     print(f"✓ Signed in as {who['fullname']} ({who['username']}) on {who['site']}. "
           f"{who['functions_available']} web-service functions available.")
 

@@ -361,7 +361,8 @@ def test_headless_machine_falls_back_to_a_private_password_file(monkeypatch):
     monkeypatch.setattr(mc, "_keyring", lambda: _NoBackend())
     where = mc.remember_password(URL, "s1", PASSWORD)
     path = mc.default_password_file()
-    assert str(path) in where and path.read_text(encoding="utf-8") == PASSWORD
+    assert str(path) in where and path.name == "auto-password.json"
+    assert json.loads(path.read_text(encoding="utf-8")) == {"site": URL, "username": "s1", "password": PASSWORD}
     if os.name != "nt":
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
@@ -397,3 +398,133 @@ def test_upload_refuses_the_fallback_password_file(monkeypatch, tmp_path):
     with pytest.raises(mc.MoodleError) as e:
         mc.check_upload_path(str(path))
     assert "password file" in str(e.value)
+
+
+# ---------------------------------------------------------------- the automatic password file is bound to one account
+
+
+def test_fallback_password_file_only_serves_its_own_account(monkeypatch):
+    monkeypatch.setattr(mc, "_keyring", lambda: _NoBackend())
+    mc.remember_password(URL, "s1", PASSWORD)
+    assert mc.recall_password(URL + "/", "s1") == PASSWORD
+    assert mc.recall_password(URL, "s2") is None
+    assert mc.recall_password("https://other.example.org", "s1") is None
+    assert mc.forget_password("https://other.example.org", "s1") != "deleted"
+    assert mc.forget_password(URL, "s2") != "deleted"
+    assert mc.default_password_file().exists()
+    assert mc.forget_password(URL, "s1") == "deleted" and not mc.default_password_file().exists()
+
+
+def test_old_plain_password_file_is_not_read_or_deleted(monkeypatch):
+    monkeypatch.setattr(mc, "_keyring", lambda: None)
+    old = mc.CONFIG_PATH.parent / "password"
+    mc._write_private(old, PASSWORD.encode())
+    assert mc.recall_password(URL, "s1") is None
+    mc.forget_password(URL, "s1")
+    assert old.exists()
+
+
+def test_a_user_password_file_at_the_automatic_path_is_never_written_or_deleted(monkeypatch):
+    path = mc.default_password_file()
+    mc._write_private(path, PASSWORD.encode())
+    monkeypatch.setenv("MOODLE_MCP_PASSWORD_FILE", str(path))
+    monkeypatch.setattr(mc, "_keyring", lambda: _Keychain())
+    assert "not copied" in mc.remember_password(URL, "s1", "new password")
+    mc.forget_password(URL, "s1")
+    assert path.read_bytes() == PASSWORD.encode()
+    assert mc.recall_password(URL, "s1") == PASSWORD
+
+
+def test_status_reports_a_broken_automatic_password_file(monkeypatch):
+    monkeypatch.setattr(mc, "_keyring", lambda: None)
+    mc._write_private(mc.default_password_file(), b"not json")
+    assert "expected format" in mc.password_file_problem()
+    assert mc.password_file_problem(include_auto=False) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_status_reports_an_automatic_password_file_others_can_read(monkeypatch):
+    monkeypatch.setattr(mc, "_keyring", lambda: _NoBackend())
+    mc.remember_password(URL, "s1", PASSWORD)
+    mc.default_password_file().chmod(0o644)
+    assert "chmod 600" in mc.password_file_problem()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_write_private_leaves_an_existing_folder_mode_alone(tmp_path):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o755)
+    mc._write_private(shared / "f", b"x")
+    assert stat.S_IMODE(shared.stat().st_mode) == 0o755
+    assert stat.S_IMODE((shared / "f").stat().st_mode) == 0o600
+    mc._write_private(tmp_path / "new" / "f", b"x")
+    assert stat.S_IMODE((tmp_path / "new").stat().st_mode) == 0o700
+
+
+# ---------------------------------------------------------------- moodle auth checks before it remembers anything
+
+
+def _auth(monkeypatch, argv, password, whoami):
+    monkeypatch.setattr("sys.argv", ["moodle", "auth", *argv])
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": password)
+    monkeypatch.setattr(cli, "password_login", lambda url, user, pw: NEW if pw == PASSWORD else (_ for _ in ()).throw(
+        mc.MoodleError("Password sign-in failed: Invalid login", "invalidlogin")))
+    monkeypatch.setattr(cli, "app_login_type", lambda url: 1)
+    monkeypatch.setattr(cli.Moodle, "whoami", whoami)
+    cli.main()
+
+
+def _who(self):
+    return {"fullname": "Sam", "username": "s1", "site": "Example", "functions_available": 1}
+
+
+def _rejected(self):
+    raise mc.MoodleError("Invalid token", "invalidtoken")
+
+
+def test_failed_sign_in_remembers_nothing_and_keeps_the_old_setup(monkeypatch):
+    monkeypatch.setattr(mc, "_keyring", lambda: _NoBackend())
+    mc.remember_password(URL, "s1", "old password")
+    mc.save_config({"url": URL, "token": OLD, "username": "s1", "remember": True})
+    before = mc.CONFIG_PATH.read_text()
+    with pytest.raises(SystemExit):
+        _auth(monkeypatch, ["--url", "https://new.example.org", "--password", "--username", "s1", "--remember"],
+              PASSWORD, _rejected)
+    assert mc.CONFIG_PATH.read_text() == before
+    assert mc.recall_password(URL, "s1") == "old password"
+    assert mc.recall_password("https://new.example.org", "s1") is None
+
+
+def test_wrong_password_remembers_nothing(monkeypatch):
+    monkeypatch.setattr(mc, "_keyring", lambda: _NoBackend())
+    with pytest.raises(SystemExit) as e:
+        _auth(monkeypatch, ["--url", URL, "--password", "--username", "s1", "--remember"], "wrong", _who)
+    assert "wrong" not in str(e.value)
+    assert not mc.default_password_file().exists() and not mc.CONFIG_PATH.exists()
+
+
+def test_switching_accounts_keeps_the_new_fallback_password(monkeypatch, capsys):
+    monkeypatch.setattr(mc, "_keyring", lambda: _NoBackend())
+    mc.remember_password(URL, "s0", "old password")
+    mc.save_config({"url": URL, "token": OLD, "username": "s0", "remember": True})
+    _auth(monkeypatch, ["--url", URL, "--password", "--username", "s1", "--remember"], PASSWORD, _who)
+    assert "Password saved" in capsys.readouterr().out
+    assert mc.recall_password(URL, "s1") == PASSWORD
+    saved = json.loads(mc.CONFIG_PATH.read_text())
+    assert saved["username"] == "s1" and saved["remember"] is True and saved["token"] == NEW
+
+
+def test_store_sign_in_forgets_the_old_password_when_only_the_site_changes(monkeypatch):
+    kr = _FakeKeyring({("moodle-mcp", f"{URL}|s1"): PASSWORD})
+    monkeypatch.setattr(mc, "_keyring", lambda: kr)
+    mc.save_config({"url": URL, "token": OLD, "username": "s1", "remember": True})
+    monkeypatch.setenv("MOODLE_URL", "https://env.example.org")  # the saved file decides, not the env view
+    cli.store_sign_in("https://new.example.org", NEW)
+    assert kr.deleted == [f"{URL}|s1"]
+
+
+def test_rejected_token_hint_quotes_the_url(monkeypatch):
+    with pytest.raises(SystemExit) as e:
+        _auth(monkeypatch, ["--url", URL + "/a;b"], "c" * 32, _rejected)
+    assert f"moodle auth --url '{URL}/a;b' --password" in str(e.value)

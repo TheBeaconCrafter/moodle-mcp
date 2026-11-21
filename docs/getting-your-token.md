@@ -77,4 +77,4 @@ moodle auth --password             # asks for username and password; only the to
 moodle auth --password --remember  # also keeps the password in your system keychain, so the token renews itself
 ```
 
-`--remember` stores the password in your system keychain. On a machine without one, such as a headless Linux server, it writes it to `~/.config/moodle-mcp/password` instead, readable only by your user account. [openai-tunnel.md](openai-tunnel.md#5-stay-signed-in) has the details.
+`--remember` stores the password in your system keychain. On a machine without one, such as a headless Linux server, it writes it to `~/.config/moodle-mcp/auto-password.json` instead, readable only by your user account. [openai-tunnel.md](openai-tunnel.md#5-stay-signed-in) has the details.

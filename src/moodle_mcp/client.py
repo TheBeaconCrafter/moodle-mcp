@@ -225,7 +225,8 @@ def save_config(cfg: dict) -> None:
 #     in a terminal fixes a running server without a restart.
 #  2. On sites with a Moodle password (not SSO), `moodle auth --password --remember` keeps the password in
 #     the OS keychain and the client fetches a fresh token itself. Machines without a keychain (headless
-#     Linux) get a private password file next to the config instead; MOODLE_MCP_PASSWORD_FILE can name one.
+#     Linux) get a private auto-password.json next to the config instead, bound to the site and account;
+#     MOODLE_MCP_PASSWORD_FILE can name a file of your own, which moodle-mcp never writes or deletes.
 
 KEYRING_SERVICE = "moodle-mcp"
 TOKEN_ERRORS = {"invalidtoken", "accessexception"}
@@ -245,16 +246,71 @@ def _keyring_user(url: str, username: str) -> str:
 
 
 def default_password_file() -> Path:
-    """Where the password goes when the machine has no keychain: next to config.json, mode 0600."""
-    return CONFIG_PATH.parent / "password"
+    """The automatic password file for machines without a keychain: next to config.json, mode 0600.
+
+    It holds JSON naming the site and account it belongs to, and is only ever used for that account. It is
+    deliberately not called `password`, the name the docs once suggested for a MOODLE_MCP_PASSWORD_FILE."""
+    return CONFIG_PATH.parent / "auto-password.json"
+
+
+def _user_password_file() -> Path | None:
+    """The file named by MOODLE_MCP_PASSWORD_FILE, if set. moodle-mcp only ever reads it."""
+    raw = os.environ.get("MOODLE_MCP_PASSWORD_FILE", "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
+def _same_file(a: Path, b: Path | None) -> bool:
+    if b is None:
+        return False
+    try:
+        return a.resolve() == b.resolve()
+    except (OSError, RuntimeError):
+        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _auto_file_is_ours() -> bool:
+    """False when the automatic path is (by accident) the user's own MOODLE_MCP_PASSWORD_FILE: never touch it."""
+    return not _same_file(default_password_file(), _user_password_file())
+
+
+def _read_auto_password() -> tuple[dict | None, str | None]:
+    """({site, username, password}, problem) from the automatic password file, or (None, None) if there's none."""
+    path = default_password_file()
+    if not path.exists():
+        return None, None
+    text, problem = _read_password_file(path)
+    if problem:
+        return None, problem
+    try:
+        data = json.loads(text or "")
+    except ValueError:
+        data = None
+    if not (isinstance(data, dict) and all(isinstance(data.get(k), str) and data.get(k)
+                                           for k in ("site", "username", "password"))):
+        return None, (f"The password file {path} isn't in the expected format; run "
+                      "`moodle auth --password --remember` again.")
+    return data, None
+
+
+def _auto_matches(data: dict | None, url: str, username: str) -> bool:
+    return bool(data) and data.get("site") == site_id(url) and data.get("username") == username
+
+
+def _delete_auto_file() -> bool:
+    path = default_password_file()
+    if not _auto_file_is_ours() or not path.exists():
+        return False
+    path.unlink()
+    return True
 
 
 def remember_password(url: str, username: str, password: str) -> str:
     """Remember the password for automatic token renewal. Returns where it went.
 
     MOODLE_MCP_PASSWORD_FILE set: the user manages that file, nothing is stored. Otherwise the OS keychain;
-    if there is none (typical on headless Linux), a private file next to the config (0600 in a 0700 folder)."""
-    if os.environ.get("MOODLE_MCP_PASSWORD_FILE", "").strip():
+    if there is none (typical on headless Linux), a private file next to the config (0600 in a 0700 folder)
+    that names the site and account it belongs to."""
+    if _user_password_file() is not None:
         return "MOODLE_MCP_PASSWORD_FILE (not copied anywhere)"
     kr = _keyring()
     if kr is not None:
@@ -263,11 +319,14 @@ def remember_password(url: str, username: str, password: str) -> str:
         except Exception:
             pass
         else:
-            default_password_file().unlink(missing_ok=True)  # don't leave an older copy on disk
+            _delete_auto_file()  # don't leave an older copy on disk
             return "the system keychain"
     path = default_password_file()
-    _write_private(path, password.encode("utf-8"))
-    return f"{path} (no system keychain here; only your user account can read it)"
+    record = {"site": site_id(url), "username": username, "password": password}
+    _write_private(path, json.dumps(record).encode("utf-8"))
+    where = ("only your user account can read it" if os.name != "nt"
+             else "it's in your profile folder and inherits its permissions")
+    return f"{path} (no system keychain here; {where})"
 
 
 def _read_password_file(path: str | Path) -> tuple[str | None, str | None]:
@@ -290,17 +349,23 @@ def _read_password_file(path: str | Path) -> tuple[str | None, str | None]:
     return (text or None), (None if text else f"The password file {path} is empty.")
 
 
-def password_file_problem() -> str | None:
-    """Why MOODLE_MCP_PASSWORD_FILE (if set) can't be used, or None when it's fine or not set."""
-    path = os.environ.get("MOODLE_MCP_PASSWORD_FILE", "").strip()
-    return _read_password_file(path)[1] if path else None
+def password_file_problem(include_auto: bool = True) -> str | None:
+    """Why the password file renewal would read can't be used, or None when it's fine or there is none.
+
+    That is MOODLE_MCP_PASSWORD_FILE when set; otherwise (with include_auto) the automatic fallback file,
+    if it exists."""
+    path = _user_password_file()
+    if path is not None:
+        return _read_password_file(path)[1]
+    return _read_auto_password()[1] if include_auto else None
 
 
 def recall_password(url: str, username: str) -> str | None:
     """The remembered password: MOODLE_MCP_PASSWORD_FILE first (handy for systemd credentials), then the
-    keychain, then the private fallback file written on machines without a keychain."""
-    path = os.environ.get("MOODLE_MCP_PASSWORD_FILE", "").strip()
-    if path:
+    keychain, then the private fallback file written on machines without a keychain (only if it was written
+    for this site and username)."""
+    path = _user_password_file()
+    if path is not None:
         return _read_password_file(path)[0]
     kr = _keyring()
     if kr is not None:
@@ -310,23 +375,24 @@ def recall_password(url: str, username: str) -> str | None:
             found = None
         if found:
             return found
-    default = default_password_file()  # written on machines without a keychain
-    return _read_password_file(default)[0] if default.exists() else None
+    data, _ = _read_auto_password()
+    return data["password"] if _auto_matches(data, url, username) else None
 
 
 def forget_password(url: str, username: str) -> str:
     """Delete a remembered password from the OS keychain.
 
-    Also removes the fallback password file. Returns "deleted", "absent" (nothing stored), "nokeyring"
-    (no keyring module and no file) or "failed"."""
+    Also removes the fallback password file if it belongs to this account. Never touches a
+    MOODLE_MCP_PASSWORD_FILE. Returns "deleted", "absent" (nothing stored), "nokeyring" (no keyring module
+    and no file) or "failed"."""
     file_deleted = False
-    default = default_password_file()
-    if default.exists():
-        try:
-            default.unlink()
-            file_deleted = True
-        except OSError:
-            return "failed"
+    if _auto_file_is_ours() and default_password_file().exists():
+        data, _ = _read_auto_password()
+        if _auto_matches(data, url, username):
+            try:
+                file_deleted = _delete_auto_file()
+            except OSError:
+                return "failed"
     kr = _keyring()
     if kr is None:
         return "deleted" if file_deleted else "nokeyring"

@@ -38,9 +38,9 @@ from .client import (
     check_site_url,
     load_config,
     parse_token,
+    password_file_problem,
     password_login,
     redact,
-    remember_password,
 )
 
 TUNNELS_URL = "https://platform.openai.com/settings/organization/tunnels"
@@ -242,24 +242,30 @@ def step_moodle(ui: UI) -> None:
     from .cli import store_sign_in
 
     while True:
+        secret = token = None  # what was just typed in (and the token it gave) never shows up in an error
         try:
             if method == "password":
                 username = ui.text("Moodle username", validate=lambda v: bool(v.strip()) or "Required")
-                password = ui.secret("Moodle password", validate=lambda v: bool(v) or "Required")
+                password = secret = ui.secret("Moodle password", validate=lambda v: bool(v) or "Required")
                 with ui.spin("Signing in…"):
                     token = password_login(url, username, password)
                     who = Moodle(url=url, token=token).whoami()
-                remember = ui.confirm("Remember the password so the token renews itself when it expires?",
-                                      default=True)
-                if remember:
-                    where = remember_password(url, username, password)
+                problem = password_file_problem(include_auto=False)
+                if problem:
+                    ui.warn(f"{problem} The password won't be remembered.")
+                    remember = False
+                else:
+                    remember = ui.confirm("Remember the password so the token renews itself when it expires?",
+                                          default=True)
+                # Only now, with the sign-in checked, is anything remembered or saved (in one locked step).
+                where = store_sign_in(url, token, username=username, password=password, remember=remember)
+                if where:
                     ui.ok(f"Password saved in {where}.")
-                store_sign_in(url, token, username=username, remember=remember)
             else:
                 ui.info(f"In Moodle: avatar → Preferences → Security keys ({url}/user/managetoken.php), press "
                         "[bold]Reset[/] on [italic]Moodle mobile web service[/] and copy the key. Or paste the "
                         "app launch link (see docs/getting-your-token.md).")
-                raw = ui.secret("Token or launch link")
+                raw = secret = ui.secret("Token or launch link")
                 try:
                     token = parse_token(raw)
                 except ValueError as e:
@@ -269,8 +275,8 @@ def step_moodle(ui: UI) -> None:
                 store_sign_in(url, token)
             ui.ok(f"Signed in as [bold]{who['fullname']}[/] on {who['site']}.")
             return
-        except MoodleError as e:
-            ui.err(redact(str(e)))
+        except (MoodleError, OSError) as e:
+            ui.err(redact(redact(str(e), secret), token))
             if not ui.confirm("Try again?", default=True):
                 raise Abort() from None
 
