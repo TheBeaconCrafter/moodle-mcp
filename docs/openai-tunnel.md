@@ -14,6 +14,22 @@ moodle-mcp  ──HTTPS + your token──►  your school's Moodle
 
 This guide covers setting it up, keeping it running, and keeping it signed in to Moodle for months at a time.
 
+**Fastest way: the quickstart.** One command installs everything and walks you through the rest in the terminal, asking before each change:
+
+```bash
+# macOS / Linux
+curl -LsSf https://raw.githubusercontent.com/TheBeaconCrafter/moodle-mcp/main/scripts/quickstart.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/TheBeaconCrafter/moodle-mcp/main/scripts/quickstart.ps1 | iex
+```
+
+It installs uv and moodle-mcp if they're missing, signs you in to Moodle, lets you pick read-only or writes, downloads OpenAI's `tunnel-client` (checking its SHA-256 against the release), asks for your tunnel id and runtime API key, writes the tunnel profile, runs `tunnel-client doctor` and sets the tunnel up to start on its own (a systemd user service, a launchd agent, or a Windows Startup entry). If moodle-mcp is already installed, just run `moodle quickstart`. You can read the scripts in [`scripts/`](../scripts) first if you'd rather not pipe them into a shell.
+
+The sections below do the same by hand, and explain what the quickstart sets up.
+
 > [!NOTE]
 > tunnel-client is OpenAI's software and changes on its own schedule. The commands below follow its README at the time of writing. If a flag has moved, `tunnel-client --help` and `tunnel-client doctor --explain` are the source of truth.
 
