@@ -81,3 +81,8 @@ def test_moodle_call_passes_params_through_without_name_clashes(monkeypatch):
     monkeypatch.setattr(server, "_client", Fake())
     assert server.moodle_call("core_course_get_contents", {"fn": 1, "a": 2}) == {"ok": True}
     assert seen == {"wsfunction": "core_course_get_contents", "params": {"fn": 1, "a": 2}}
+
+
+def test_instructions_mark_moodle_content_as_untrusted():
+    text = server.mcp.instructions or ""
+    assert "untrusted" in text and "moodle_call" in text
