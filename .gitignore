@@ -11,6 +11,8 @@ build/
 # Never commit a Moodle token
 config.json
 .env
+.env.*
+!.env.example
 *.token
 
 # OS
