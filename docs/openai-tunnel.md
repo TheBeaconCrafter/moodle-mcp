@@ -90,7 +90,7 @@ OpenAI's [tunnel permissions guide](https://github.com/openai/tunnel-client/blob
 | Linux | each version in `~/.local/share/tunnel-client/versions/<tag>/`, with `~/.local/bin/tunnel-client` linking to the current one | unpacks the new version and switches the link; the previous version stays for rollback |
 | Windows | `%LOCALAPPDATA%\Programs\tunnel-client`, added to your user PATH | renames the old files aside, so it works even while the tunnel runs |
 
-Downloads are checked against the SHA-256 in the release's `SHA256SUMS.txt` before anything is unpacked. The background service points at the stable command path, so it keeps working across updates.
+Downloads use https only (redirects included) and are checked against the SHA-256 in the release's `SHA256SUMS.txt` before anything is unpacked. That check is about integrity: it catches a corrupt or truncated download or a tampered mirror. It isn't a signature, so it can't protect you from a release that was compromised on GitHub itself, because the checksum file comes from the same place. The background service points at the stable command path, so it keeps working across updates.
 
 ```bash
 moodle tunnel status    # installed version, where it lives, and whether a newer release exists

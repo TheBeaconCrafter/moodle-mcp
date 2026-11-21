@@ -9,7 +9,9 @@ lands on PATH, usable for other tunnels too:
 - Windows: %LOCALAPPDATA%\\Programs\\tunnel-client, added to your user PATH. An update renames the old files
   aside first, so it works while tunnel-client is running.
 
-Release ZIPs are checked against the release's SHA256SUMS.txt before anything is unpacked.
+Release ZIPs are checked against the release's SHA256SUMS.txt before anything is unpacked. That catches a
+corrupt download or a tampered mirror; it is not a signature, so it can't vouch for a release that was
+compromised on GitHub itself. Every request (redirects included) must be https.
 Like quickstart.py, this module runs other programs (tunnel-client, brew, systemctl, launchctl).
 """
 
@@ -35,6 +37,9 @@ from .client import MoodleError
 RELEASES_API = "https://api.github.com/repos/openai/tunnel-client/releases/latest"
 BREW_FORMULA = "openai/tools/tunnel-client"
 MAX_ZIP_BYTES = 300 * 1024 * 1024
+MAX_SUMS_BYTES = 1024 * 1024
+TAG_RE = re.compile(r"v?\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?")
+MEMBER_RE = re.compile(r"[A-Za-z0-9._+-]+")  # a plain file name: no folders, drive letters or :streams
 KEEP_VERSIONS = 2
 SERVICE_NAME = "moodle-tunnel"
 LAUNCHD_LABEL = "com.moodle-mcp.tunnel"
@@ -45,6 +50,29 @@ Say = Callable[[str], None]
 
 def _quiet(_: str) -> None:
     pass
+
+
+def _is_cwd(folder: str | Path) -> bool:
+    try:
+        return Path(folder or ".").resolve() == Path.cwd().resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
+def which(name: str) -> str | None:
+    """shutil.which, but never a program in the current directory: Windows looks there first, so a file
+    dropped into the folder you run this from could otherwise be picked up as tunnel-client or moodle-mcp."""
+    path = os.pathsep.join(d for d in os.environ.get("PATH", "").split(os.pathsep) if d and not _is_cwd(d))
+    found = shutil.which(name, path=path)
+    if not found or not Path(found).is_absolute() or _is_cwd(Path(found).parent):
+        return None
+    return found
+
+
+def no_cwd_exe_search() -> None:
+    """On Windows, stop programs started from here (and shutil.which) from searching the current directory."""
+    if os.name == "nt":
+        os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
 
 # ---------------------------------------------------------------- layout and pure helpers
@@ -107,9 +135,9 @@ def extract_release(data: bytes, dest: Path) -> Path:
             raise MoodleError("The tunnel-client download didn't contain the tunnel-client program.", "badrelease")
         dest.mkdir(parents=True, exist_ok=True)
         for info in members:
-            name = info.filename.replace("\\", "/")
-            if "/" in name or name in ("", ".", ".."):
-                continue
+            name = info.filename
+            if not MEMBER_RE.fullmatch(name) or name in (".", ".."):
+                continue  # sub-paths, drive letters (C:x), NTFS streams (name:stream) and the like
             with z.open(info) as src, open(dest / name, "wb") as out:
                 shutil.copyfileobj(src, out)
     if os.name != "nt":
@@ -141,7 +169,7 @@ def installed_version(path: Path) -> str | None:
 
 
 def brew() -> str | None:
-    return shutil.which("brew")
+    return which("brew")
 
 
 def brew_command_path() -> Path | None:
@@ -154,10 +182,30 @@ def brew_command_path() -> Path | None:
     return candidate if candidate and candidate.exists() else None
 
 
+def _under_brew_prefix(path: Path) -> bool:
+    b = brew()
+    if not b:
+        return False
+    try:
+        r = _run([b, "--prefix"], timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    prefix = r.stdout.strip()
+    if r.returncode != 0 or not prefix:
+        return False
+    try:
+        path.resolve().relative_to(Path(prefix).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def classify(path: Path) -> str:
     resolved = str(path.resolve())
-    if "/Cellar/tunnel-client/" in resolved or "/opt/tunnel-client/" in resolved:
+    if platform.system() == "Darwin" and ("/Cellar/tunnel-client/" in resolved or "/opt/tunnel-client/" in resolved):
         return "homebrew"
+    if platform.system() == "Linux" and "/Cellar/tunnel-client/" in resolved and _under_brew_prefix(path):
+        return "homebrew"  # Homebrew on Linux
     try:
         path.resolve().relative_to(install_root().resolve())
         return "moodle-mcp"
@@ -170,7 +218,7 @@ def find() -> Installed | None:
     for candidate in (brew_command_path() if platform.system() == "Darwin" else None, command_path()):
         if candidate and candidate.exists():
             return Installed(candidate, installed_version(candidate), classify(candidate))
-    on_path = shutil.which("tunnel-client")
+    on_path = which("tunnel-client")
     if on_path:
         p = Path(on_path)
         return Installed(p, installed_version(p), classify(p))
@@ -191,9 +239,33 @@ class Release:
         return parse_version(self.tag)
 
 
+def _require_https(url) -> None:
+    if httpx.URL(str(url)).scheme != "https":
+        raise MoodleError("A tunnel-client download didn't use https; not installing it.", "badrelease")
+
+
+def _https_only(request: httpx.Request) -> None:
+    _require_https(request.url)  # every request, so a redirect to http:// is refused too
+
+
 def _http() -> httpx.Client:
     return httpx.Client(timeout=httpx.Timeout(30, read=120), follow_redirects=True,
-                        headers={"User-Agent": "moodle-mcp", "Accept": "application/vnd.github+json"})
+                        headers={"User-Agent": "moodle-mcp", "Accept": "application/vnd.github+json"},
+                        event_hooks={"request": [_https_only]})
+
+
+def _get_capped(h: httpx.Client, url: str, cap: int) -> bytes:
+    """GET url (https only, also after redirects), reading at most `cap` bytes."""
+    _require_https(url)
+    with h.stream("GET", url) as r:
+        r.raise_for_status()
+        _require_https(r.url)
+        buf = bytearray()
+        for chunk in r.iter_bytes():
+            buf += chunk
+            if len(buf) > cap:
+                raise MoodleError("The tunnel-client download is unexpectedly large.", "badrelease")
+    return bytes(buf)
 
 
 def latest_release(slug: str | None = None) -> Release:
@@ -201,29 +273,31 @@ def latest_release(slug: str | None = None) -> Release:
     with _http() as h:
         r = h.get(RELEASES_API)
         r.raise_for_status()
+        _require_https(r.url)
         rel = r.json()
-    tag = rel["tag_name"]
+    tag = rel.get("tag_name")
+    if not isinstance(tag, str) or not TAG_RE.fullmatch(tag):
+        raise MoodleError("The latest tunnel-client release has an unexpected tag; install it by hand.", "badrelease")
     assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
     name = asset_name(tag, slug)
     if name not in assets or "SHA256SUMS.txt" not in assets:
         raise MoodleError(f"tunnel-client {tag} has no {name}. Install it by hand.", "badrelease")
+    for url in (assets[name], assets["SHA256SUMS.txt"]):
+        _require_https(url)
     return Release(tag, assets[name], assets["SHA256SUMS.txt"], name)
 
 
 def download_verified(rel: Release, say: Say = _quiet) -> bytes:
     with _http() as h:
-        sums = parse_sha256sums(h.get(rel.sums_url).raise_for_status().text)
+        sums = parse_sha256sums(_get_capped(h, rel.sums_url, MAX_SUMS_BYTES).decode("utf-8", "replace"))
         say(f"Downloading {rel.zip_name}…")
-        r = h.get(rel.zip_url)
-        r.raise_for_status()
-    if len(r.content) > MAX_ZIP_BYTES:
-        raise MoodleError("The tunnel-client download is unexpectedly large.", "badrelease")
-    digest = hashlib.sha256(r.content).hexdigest()
+        data = _get_capped(h, rel.zip_url, MAX_ZIP_BYTES)
+    digest = hashlib.sha256(data).hexdigest()
     if sums.get(rel.zip_name) != digest:
         raise MoodleError(f"{rel.zip_name} doesn't match the SHA-256 in the release's SHA256SUMS.txt; not "
                           "installing it.", "badchecksum")
     say(f"SHA-256 matches the release's SHA256SUMS.txt ({digest[:16]}…).")
-    return r.content
+    return data
 
 
 # ---------------------------------------------------------------- installing
@@ -231,6 +305,8 @@ def download_verified(rel: Release, say: Say = _quiet) -> bytes:
 def _install_linux(data: bytes, tag: str) -> Path:
     root = install_root()
     version_dir = root / "versions" / tag
+    if not TAG_RE.fullmatch(tag) or version_dir.parent != root / "versions":
+        raise MoodleError("Unexpected tunnel-client release tag; not installing it.", "badrelease")
     staging = root / "versions" / f".{tag}.{os.getpid()}.tmp"
     shutil.rmtree(staging, ignore_errors=True)
     extract_release(data, staging)
@@ -354,6 +430,7 @@ def restart_service(say: Say = _quiet) -> None:
 # ---------------------------------------------------------------- `moodle tunnel …`
 
 def cmd_tunnel(action: str) -> int:
+    no_cwd_exe_search()
     say = print
     try:
         if action == "status":

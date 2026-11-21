@@ -85,7 +85,7 @@ def sandbox(monkeypatch, tmp_path):
     monkeypatch.setattr(tc, "install_root", lambda: tmp_path / "root")
     cmd = tmp_path / "root" / EXE if os.name == "nt" else tmp_path / "home" / ".local" / "bin" / EXE
     monkeypatch.setattr(tc, "command_path", lambda: cmd)
-    monkeypatch.setattr(tc.shutil, "which", lambda name: None)
+    monkeypatch.setattr(tc.shutil, "which", lambda name, **k: None)
     monkeypatch.setattr(tc, "installed_version", lambda p: p.resolve().read_bytes().decode() if p.exists() else None)
     monkeypatch.setattr(tc, "add_to_user_path", lambda folder: True)
     return cmd
@@ -132,7 +132,7 @@ def test_foreign_install_is_left_alone(monkeypatch, tmp_path, sandbox):
     other = tmp_path / "elsewhere" / EXE
     other.parent.mkdir()
     other.write_bytes(b"0.0.1")
-    monkeypatch.setattr(tc.shutil, "which", lambda name: str(other))
+    monkeypatch.setattr(tc.shutil, "which", lambda name, **k: str(other))
     found = tc.find()
     assert found.manager == "other" and found.path == other
     with pytest.raises(MoodleError) as e:
@@ -144,7 +144,105 @@ def test_macos_without_homebrew_explains(monkeypatch, tmp_path):
     monkeypatch.setattr(tc.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(tc, "brew", lambda: None)
     monkeypatch.setattr(tc, "command_path", lambda: tmp_path / "nope")
-    monkeypatch.setattr(tc.shutil, "which", lambda name: None)
+    monkeypatch.setattr(tc.shutil, "which", lambda name, **k: None)
     with pytest.raises(MoodleError) as e:
         tc.install_or_update()
     assert e.value.code == "nobrew" and "brew.sh" in str(e.value)
+
+
+# ---------------------------------------------------------------- hostile or broken releases
+
+
+def _api(monkeypatch, tag="v1.2.3", zip_url=None, sums_url=None, routes=None):
+    name = tc.asset_name(tag, tc.platform_slug())
+    routes = routes or {}
+
+    def handler(request: httpx.Request):
+        if request.url.path.endswith("/releases/latest"):
+            return httpx.Response(200, json={"tag_name": tag, "assets": [
+                {"name": name, "browser_download_url": zip_url or f"https://dl.example/{name}"},
+                {"name": "SHA256SUMS.txt", "browser_download_url": sums_url or "https://dl.example/SHA256SUMS.txt"}]})
+        return routes[str(request.url)](request)
+
+    real = httpx.Client
+    monkeypatch.setattr(tc, "_http", lambda: real(transport=httpx.MockTransport(handler), follow_redirects=True,
+                                                  event_hooks={"request": [tc._https_only]}))
+    return name
+
+
+@pytest.mark.parametrize("tag", ["../../evil", "v1.2", "v1.2.3/../../x", "latest", "v1.2.3\n"])
+def test_unexpected_release_tags_are_refused(monkeypatch, tag):
+    _api(monkeypatch, tag=tag)
+    with pytest.raises(MoodleError) as e:
+        tc.latest_release()
+    assert e.value.code == "badrelease"
+
+
+def test_release_tags_with_suffixes_are_accepted(monkeypatch):
+    _api(monkeypatch, tag="v1.2.3-rc.1")
+    assert tc.latest_release().tag == "v1.2.3-rc.1"
+
+
+def test_plain_http_asset_urls_are_refused(monkeypatch):
+    _api(monkeypatch, zip_url="http://dl.example/x.zip")
+    with pytest.raises(MoodleError):
+        tc.latest_release()
+
+
+def test_a_redirect_to_http_is_refused(monkeypatch):
+    _api(monkeypatch, routes={
+        "https://dl.example/SHA256SUMS.txt": lambda r: httpx.Response(302, headers={"location": "http://dl.example/s"}),
+        "http://dl.example/s": lambda r: httpx.Response(200, text="x"),
+    })
+    with pytest.raises(MoodleError):
+        tc.download_verified(tc.latest_release())
+
+
+def test_downloads_are_capped_while_streaming(monkeypatch):
+    name = _api(monkeypatch, routes={
+        "https://dl.example/SHA256SUMS.txt": lambda r: httpx.Response(200, text="a" * 64 + "  x.zip\n"),
+    })
+    monkeypatch.setattr(tc, "MAX_ZIP_BYTES", 10)
+    rel = tc.latest_release()
+    _api(monkeypatch, routes={
+        "https://dl.example/SHA256SUMS.txt": lambda r: httpx.Response(200, text="a" * 64 + "  x.zip\n"),
+        f"https://dl.example/{name}": lambda r: httpx.Response(200, content=b"z" * 100),
+    })
+    with pytest.raises(MoodleError) as e:
+        tc.download_verified(rel)
+    assert "unexpectedly large" in str(e.value)
+    monkeypatch.setattr(tc, "MAX_SUMS_BYTES", 10)
+    with pytest.raises(MoodleError):
+        tc.download_verified(rel)
+
+
+def test_zip_member_names_must_be_plain_file_names(tmp_path):
+    tc.extract_release(_zip({EXE: b"bin", "C:x": b"1", "name:stream": b"2", "a\\b": b"3", "..": b"4", "ok.txt": b"5"}),
+                       tmp_path / "d")
+    assert sorted(p.name for p in (tmp_path / "d").iterdir()) == sorted([EXE, "ok.txt"])
+
+
+def test_linux_opt_tunnel_client_is_not_homebrew(monkeypatch, tmp_path):
+    p = tmp_path / "opt" / "tunnel-client" / "tunnel-client"
+    p.parent.mkdir(parents=True)
+    p.write_bytes(b"")
+    monkeypatch.setattr(tc.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(tc, "brew", lambda: None)
+    monkeypatch.setattr(tc, "install_root", lambda: tmp_path / "root")
+    assert tc.classify(p) == "other"
+    monkeypatch.setattr(tc.platform, "system", lambda: "Darwin")
+    if "/opt/tunnel-client/" in str(p.resolve()):
+        assert tc.classify(p) == "homebrew"
+
+
+def test_find_ignores_a_tunnel_client_in_the_current_directory(monkeypatch, tmp_path):
+    here = tmp_path / "here"
+    here.mkdir()
+    planted = here / (EXE if os.name == "nt" else "tunnel-client")
+    planted.write_bytes(b"")
+    planted.chmod(0o755)
+    monkeypatch.chdir(here)
+    monkeypatch.setenv("PATH", os.pathsep.join([".", str(here)]))
+    monkeypatch.setattr(tc.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(tc, "command_path", lambda: tmp_path / "none" / EXE)
+    assert tc.find() is None
