@@ -19,7 +19,6 @@ import json
 import os
 import platform
 import re
-import shutil
 import subprocess
 import sys
 import webbrowser
@@ -94,8 +93,20 @@ def run_args(paths: Paths) -> list[str]:
     return [str(paths.tunnel_client), "run", "--profile-file", str(paths.profile_file)]
 
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _systemd_quote(arg: str) -> str:
+    """One ExecStart argument, double-quoted: backslash and quote escaped, % (specifiers) and $ (variables)
+    doubled so systemd passes the path through literally."""
+    if _CONTROL_CHARS.search(arg):
+        raise MoodleError("A path for the service contains control characters; not writing the unit.", "badpath")
+    escaped = arg.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$")
+    return f'"{escaped}"'
+
+
 def systemd_unit(paths: Paths) -> str:
-    exec_start = " ".join(f'"{a}"' for a in run_args(paths))
+    exec_start = " ".join(_systemd_quote(a) for a in run_args(paths))
     return f"""[Unit]
 Description=OpenAI Secure MCP Tunnel for moodle-mcp
 After=network-online.target
@@ -133,20 +144,36 @@ def launchd_plist(paths: Paths, log_file: Path) -> str:
 """
 
 
+def _ps_quote(text: str) -> str:
+    """A PowerShell single-quoted string. PowerShell also ends such a string at the typographic quotes
+    U+2018..U+201B, so those are doubled like '."""
+    for q in ("'", "\u2018", "\u2019", "\u201a", "\u201b"):
+        text = text.replace(q, q * 2)
+    return f"'{text}'"
+
+
+def _system32() -> Path:
+    return Path(os.environ.get("SystemRoot") or r"C:\Windows") / "System32"
+
+
 def windows_runner(paths: Paths) -> str:
-    """PowerShell loop that restarts tunnel-client if it exits (Windows has no user-level service manager)."""
-    args = " ".join("'" + a.replace("'", "''") + "'" for a in run_args(paths)[1:])
-    exe = str(paths.tunnel_client).replace("'", "''")
+    """PowerShell loop that restarts tunnel-client if it exits (Windows has no user-level service manager).
+    Written as UTF-8 with a BOM so Windows PowerShell 5.1 reads non-ASCII profile paths correctly."""
+    args = " ".join(_ps_quote(a) for a in run_args(paths)[1:])
+    exe = _ps_quote(str(paths.tunnel_client))
     return f"""# Started at sign-in by moodle-mcp quickstart. Delete the Startup entry to stop it.
 while ($true) {{
-  & '{exe}' {args}
+  & {exe} {args}
   Start-Sleep -Seconds 10
 }}
 """
 
 
 def windows_launcher(ps1: Path) -> str:
-    cmd = f'powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{ps1}""'
+    """The Startup-folder .vbs that starts the runner hidden. Written as UTF-16 (with a BOM), which wscript
+    reads, so a non-ASCII profile path survives; powershell.exe is named by its full path."""
+    powershell = _system32() / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    cmd = f'""{powershell}"" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{ps1}""'
     return f'CreateObject("WScript.Shell").Run "{cmd}", 0, False\r\n'
 
 
@@ -352,17 +379,21 @@ def step_openai(ui: UI, paths: Paths) -> str:
         return tunnel_id
     key = ui.secret("Runtime API key (hidden)", validate=lambda v: len(v.strip()) >= 20 or "That looks too short")
     _write_private(paths.key_file, key.encode("utf-8"))
-    ui.ok(f"Saved the key to {paths.key_file} (only your user account can read it).")
+    who = ("only your user account can read it" if os.name != "nt"
+           else "it's in your profile folder and inherits its permissions")
+    ui.ok(f"Saved the key to {paths.key_file} ({who}).")
     return tunnel_id
 
 
 def moodle_mcp_path() -> str:
-    found = shutil.which("moodle-mcp")
+    """The moodle-mcp command next to this Python (the uv tool environment) first, then PATH, never the
+    current directory."""
+    sibling = Path(sys.executable).with_name("moodle-mcp.exe" if os.name == "nt" else "moodle-mcp")
+    if sibling.is_file():
+        return str(sibling)
+    found = tc.which("moodle-mcp")
     if found:
         return str(Path(found).resolve())
-    sibling = Path(sys.executable).with_name("moodle-mcp.exe" if os.name == "nt" else "moodle-mcp")
-    if sibling.exists():
-        return str(sibling)
     raise MoodleError("Couldn't find the moodle-mcp command. Install moodle-mcp with uv first.", "nomcp")
 
 
@@ -399,7 +430,7 @@ def step_profile(ui: UI, paths: Paths, tunnel_id: str, allow_writes: bool) -> No
 def install_service(ui: UI, paths: Paths) -> bool:
     system = platform.system()
     if system == "Linux":
-        if not shutil.which("systemctl") or _run(["systemctl", "--user", "show-environment"]).returncode != 0:
+        if not tc.which("systemctl") or _run(["systemctl", "--user", "show-environment"]).returncode != 0:
             ui.warn("No systemd user session here, so no service was installed.")
             return False
         unit = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd" / "user" / \
@@ -432,13 +463,14 @@ def install_service(ui: UI, paths: Paths) -> bool:
         return True
     if system == "Windows":
         ps1 = paths.profile_dir / "run-tunnel.ps1"
-        ps1.write_text(windows_runner(paths), encoding="utf-8")
+        ps1.write_text(windows_runner(paths), encoding="utf-8-sig")
         startup = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Microsoft" / \
             "Windows" / "Start Menu" / "Programs" / "Startup"
         startup.mkdir(parents=True, exist_ok=True)
         vbs = startup / f"{SERVICE_NAME}.vbs"
-        vbs.write_text(windows_launcher(ps1), encoding="utf-8")
-        subprocess.Popen(["wscript.exe", str(vbs)], creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+        vbs.write_text(windows_launcher(ps1), encoding="utf-16", newline="")
+        subprocess.Popen([str(_system32() / "wscript.exe"), str(vbs)],
+                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
         ui.ok(f"Added {vbs.name} to your Startup folder and started the tunnel in the background.")
         ui.info(f"To stop it for good, delete {vbs} and end tunnel-client in Task Manager.")
         return True
@@ -484,6 +516,7 @@ def finish(ui: UI, paths: Paths) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    tc.no_cwd_exe_search()
     for stream in (sys.stdout, sys.stderr):  # ✓/✗ on an old Windows code page: degrade, don't crash
         try:
             stream.reconfigure(errors="replace")
