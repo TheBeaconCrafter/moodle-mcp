@@ -61,8 +61,12 @@ def load_config() -> dict:
     cfg: dict = {}
     if CONFIG_PATH.exists():
         cfg = json.loads(CONFIG_PATH.read_text())
-    if os.environ.get("MOODLE_URL"):
-        cfg["url"] = os.environ["MOODLE_URL"]
+    env_url = os.environ.get("MOODLE_URL", "").strip()
+    if env_url:
+        # The saved token belongs to the saved site; never send it to a different one.
+        if env_url.rstrip("/").lower() != str(cfg.get("url", "")).rstrip("/").lower():
+            cfg.pop("token", None)
+        cfg["url"] = env_url
     if os.environ.get("MOODLE_TOKEN"):
         cfg["token"] = os.environ["MOODLE_TOKEN"]
     cfg.setdefault("url", DEFAULT_URL)

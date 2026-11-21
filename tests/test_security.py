@@ -395,3 +395,24 @@ def test_auth_refuses_http_before_asking_for_the_token(monkeypatch):
     with pytest.raises(SystemExit) as e:
         cli.main()
     assert "https" in str(e.value.code)
+
+
+# ---------------------------------------------------------------- env override
+
+
+def test_moodle_url_for_another_site_drops_the_saved_token(monkeypatch):
+    mc.save_config({"url": "https://a.example.edu", "token": "x" * 32})
+    monkeypatch.setenv("MOODLE_URL", "https://evil.example.com")
+    cfg = mc.load_config()
+    assert cfg["url"] == "https://evil.example.com" and "token" not in cfg
+    with pytest.raises(mc.MoodleError) as e:
+        mc.Moodle()
+    assert e.value.code == "notoken"
+    monkeypatch.setenv("MOODLE_TOKEN", "y" * 32)
+    assert mc.load_config()["token"] == "y" * 32
+
+
+def test_moodle_url_for_the_same_site_keeps_the_saved_token(monkeypatch):
+    mc.save_config({"url": "https://a.example.edu", "token": "x" * 32})
+    monkeypatch.setenv("MOODLE_URL", "https://A.example.edu/")
+    assert mc.load_config()["token"] == "x" * 32
