@@ -940,3 +940,44 @@ def test_more_hidden_elements_are_dropped(html):
 ])
 def test_visible_or_screen_reader_text_is_kept(html):
     assert "kept" in mc.html_to_text(html)
+
+
+# ---------------------------------------------------------------- no built-in site
+
+
+def test_there_is_no_default_site(monkeypatch):
+    assert not hasattr(mc, "DEFAULT_URL")
+    assert "url" not in mc.load_config()
+    with pytest.raises(mc.MoodleError) as e:
+        mc.Moodle()
+    assert e.value.code == "notoken" and "moodle auth --url" in str(e.value)
+    monkeypatch.setenv("MOODLE_URL", SITE)
+    monkeypatch.setenv("MOODLE_TOKEN", TOKEN)
+    assert mc.Moodle().url == SITE
+
+
+def test_auth_asks_for_the_site_when_none_is_saved(monkeypatch):
+    from moodle_mcp import cli
+
+    asked = []
+
+    def fake_input(prompt):
+        asked.append(prompt)
+        return "http://moodle.example.edu"  # refused before any token prompt
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    monkeypatch.setattr(cli.getpass, "getpass", lambda *a, **k: pytest.fail("should not prompt for a token"))
+    monkeypatch.setattr("sys.argv", ["moodle", "auth"])
+    with pytest.raises(SystemExit) as e:
+        cli.main()
+    assert asked and "Moodle site URL" in asked[0] and "https" in str(e.value.code)
+
+
+def test_auth_with_an_empty_site_answer_stops(monkeypatch):
+    from moodle_mcp import cli
+
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+    monkeypatch.setattr("sys.argv", ["moodle", "auth"])
+    with pytest.raises(SystemExit) as e:
+        cli.main()
+    assert "--url" in str(e.value.code)

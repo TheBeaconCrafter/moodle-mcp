@@ -26,7 +26,6 @@ from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse, urlsp
 
 import httpx
 
-DEFAULT_URL = "https://moodle.trincoll.edu"
 CONFIG_PATH = Path(os.environ.get("MOODLE_MCP_CONFIG", "~/.config/moodle-mcp/config.json")).expanduser()
 MAX_FILE_REDIRECTS = 5
 DOWNLOAD_ROOT = "~/Downloads/Moodle"
@@ -107,7 +106,6 @@ def load_config() -> dict:
         cfg["url"] = env_url
     if os.environ.get("MOODLE_TOKEN"):
         cfg["token"] = os.environ["MOODLE_TOKEN"]
-    cfg.setdefault("url", DEFAULT_URL)
     return cfg
 
 
@@ -492,6 +490,9 @@ def _flatten(prefix: str, value: Any, out: dict, depth: int = 0) -> None:
 class Moodle:
     def __init__(self, url: str | None = None, token: str | None = None):
         cfg = load_config()
+        if not (url or cfg.get("url")):
+            raise MoodleError("No Moodle site configured. Run `moodle auth --url https://moodle.yourschool.edu` "
+                              "in a terminal (or set MOODLE_URL).", "notoken")
         self.url = check_site_url(url or cfg["url"])
         self.token = token or cfg.get("token")
         # Only a token that came from the config file may be swapped for a fresh one later.

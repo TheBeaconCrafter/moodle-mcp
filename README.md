@@ -28,7 +28,7 @@ moodle-mcp connects Claude to your Moodle account. From the chat you can ask wha
 It's about 1,400 lines of Python running on your own laptop. It signs in with the personal token Moodle gives its phone app and calls the same web-service API the app uses, so Claude sees what you'd see in the app and nothing more. It doesn't scrape pages or ask for your password.
 
 > [!NOTE]
-> It defaults to `moodle.trincoll.edu`, but it works with any Moodle site that allows the Moodle mobile app. See [Other schools](#other-schools).
+> It works with any Moodle site that allows the Moodle mobile app. `moodle auth` asks for your school's Moodle address the first time. See [Other schools](#other-schools).
 
 ## Things to ask
 
@@ -66,10 +66,10 @@ This installs two commands, `moodle` for you and `moodle-mcp` for Claude. If you
 ### 2. Sign in
 
 ```bash
-moodle auth
+moodle auth --url https://moodle.yourschool.edu
 ```
 
-`moodle auth` explains where to find your token and then asks for it in a hidden prompt. In Moodle, click your avatar and go to Preferences > Security keys, press Reset on the *Moodle mobile web service* row, and copy the key it shows you. [docs/getting-your-token.md](docs/getting-your-token.md) has the full walkthrough and a second method for schools where that page is missing.
+Use your school's Moodle address (the part of the URL before `/my/` or `/course/`). Without `--url`, `moodle auth` asks for it the first time and remembers it afterwards. It then explains where to find your token and then asks for it in a hidden prompt. In Moodle, click your avatar and go to Preferences > Security keys, press Reset on the *Moodle mobile web service* row, and copy the key it shows you. [docs/getting-your-token.md](docs/getting-your-token.md) has the full walkthrough and a second method for schools where that page is missing.
 
 ```bash
 moodle whoami    # prints your name if it worked
@@ -173,7 +173,7 @@ moodle news | notifications | search QUERY
 moodle functions [FILTER]             what your token can call
 moodle call WSFUNCTION '{"json": "params"}'
 moodle status                         is the sign-in still good? (exits 1 if not)
-moodle auth [--password [--remember]] sign in (token prompt, or Moodle password)
+moodle auth [--url URL] [--password [--remember]]   sign in (token prompt, or Moodle password)
 moodle logout                         delete the saved token
 ```
 
@@ -293,6 +293,8 @@ Moodle tokens often expire after a few months. moodle-mcp copes in three ways:
 [docs/openai-tunnel.md](docs/openai-tunnel.md#5-stay-signed-in) has the details, including headless servers and SSO sites.
 
 ## Other schools
+
+moodle-mcp has no built-in school: you always tell it which site to use.
 
 ```bash
 moodle auth --url https://moodle.yourschool.edu

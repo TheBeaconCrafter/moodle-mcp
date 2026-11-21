@@ -11,7 +11,6 @@ import time
 
 from .client import (
     CONFIG_PATH,
-    DEFAULT_URL,
     Moodle,
     MoodleError,
     check_site_url,
@@ -51,7 +50,11 @@ on Windows it lives in your profile folder).
 def cmd_auth(args) -> None:
     cfg = load_config()
     try:
-        url = check_site_url(args.url or cfg.get("url") or DEFAULT_URL)
+        raw_url = args.url or cfg.get("url") or input("Moodle site URL (e.g. https://moodle.yourschool.edu): ").strip()
+        if not raw_url:
+            raise MoodleError("No Moodle site URL given. Run `moodle auth --url https://moodle.yourschool.edu`.",
+                              "badurl")
+        url = check_site_url(raw_url)
     except MoodleError as e:
         sys.exit(f"✗ {e}")
     extra: dict = {}
@@ -198,7 +201,7 @@ def main() -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     a = sub.add_parser("auth", help="save your Moodle token")
-    a.add_argument("--url", help=f"Moodle site (default {DEFAULT_URL})")
+    a.add_argument("--url", help="your Moodle site, e.g. https://moodle.yourschool.edu (asked for if not saved yet)")
     a.add_argument("--password", action="store_true",
                    help="sign in with your Moodle username and password instead of a token (sites without SSO)")
     a.add_argument("--username", help="username for --password (asked for if left out)")

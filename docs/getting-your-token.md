@@ -14,10 +14,10 @@ Pick one method. Methods A and B work everywhere the Moodle app works; Method C 
 5. In a terminal, run:
 
    ```bash
-   moodle auth
+   moodle auth --url https://moodle.yourschool.edu
    ```
 
-   Paste the key at the hidden prompt. You won't see it as you type, which is normal.
+   Use your own school's Moodle address (`moodle auth` asks for it if you leave `--url` out). Paste the key at the hidden prompt. You won't see it as you type, which is normal.
 
 > [!NOTE]
 > **No "Moodle mobile web service" row?** Sign in to the Moodle phone app once (App Store / Google Play, search "Moodle"), then refresh the Security keys page and the row appears.
