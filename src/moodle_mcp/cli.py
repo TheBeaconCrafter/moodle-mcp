@@ -141,6 +141,33 @@ def cmd_logout(args) -> None:
         print("Note: MOODLE_MCP_PASSWORD_FILE is a file you manage yourself; it was not deleted.")
 
 
+def cmd_downloads(args) -> None:
+    from . import downloads
+
+    days = downloads.retention_days()
+    policy = f"deleted after {days:g} days" if days > 0 else "kept (automatic clean-up is off)"
+    if args.action == "clean":
+        res = downloads.cleanup(everything=args.all)
+        if args.json:
+            return _print(res)
+        for p in res["removed"]:
+            print(f"✓ Deleted {p}")
+        for p in res["kept_edited"]:
+            print(f"  Kept {p} (you edited it; no longer tracked)")
+        print(f"{len(res['removed'])} deleted, {res['tracked']} still tracked.")
+        return
+    items = downloads.tracked()
+    if args.json:
+        return _print({"policy_days": days, "files": items})
+    print(f"Files the MCP server saved to {downloads.root()} are {policy}. "
+          "Files you edit, move, or put there yourself are never deleted.")
+    for e in items:
+        note = "  (edited: will be kept)" if e["edited"] else ""
+        print(f"{e['age_days']:>6.1f} days  {e['path']}{note}")
+    if not items:
+        print("No tracked downloads.")
+
+
 def cmd_status(args) -> None:
     """Exit 0 if the saved token works (renewing it if it can), 1 otherwise. Good for a scheduled check."""
     c = None
@@ -225,6 +252,9 @@ def main() -> None:
     sub.add_parser("logout", parents=[common], help="delete the saved token (and any remembered password) from this computer")
     sub.add_parser("status", parents=[common], help="check the saved sign-in still works; exits 1 if not")
     sub.add_parser("quickstart", help="guided setup: sign in and connect ChatGPT through OpenAI's tunnel")
+    s = sub.add_parser("downloads", parents=[common], help="list or clean up files the MCP server saved to ~/Downloads/Moodle")
+    s.add_argument("action", choices=["list", "clean"], nargs="?", default="list")
+    s.add_argument("--all", action="store_true", help="with clean: delete every tracked download, whatever its age")
     s = sub.add_parser("tunnel", help="install, update or check OpenAI's tunnel-client")
     s.add_argument("action", choices=["status", "install", "update"], nargs="?", default="status")
     sub.add_parser("whoami", parents=[common], help="check the connection")
@@ -261,6 +291,8 @@ def main() -> None:
         return cmd_auth(args)
     if args.cmd == "logout":
         return cmd_logout(args)
+    if args.cmd == "downloads":
+        return cmd_downloads(args)
     if args.cmd == "tunnel":
         from .tunnelclient import cmd_tunnel
         sys.exit(cmd_tunnel(args.action))

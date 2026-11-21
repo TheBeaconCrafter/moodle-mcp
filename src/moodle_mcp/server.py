@@ -8,6 +8,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from . import downloads
 from .client import DOWNLOAD_ROOT, Moodle, MoodleError, is_read_only_function, redact, safe_code
 
 mcp = FastMCP(
@@ -155,8 +156,16 @@ def moodle_download(fileurl: str, dest_dir: str = DOWNLOAD_ROOT) -> Any:
     """Save a Moodle file (a `fileurl` from another tool) into ~/Downloads/Moodle and return the local path.
     dest_dir may name a subfolder of ~/Downloads/Moodle (e.g. 'CHEM 111'); anything outside it is refused.
     Existing files are never overwritten: a clash gets ' (1)', ' (2)'… added to the name. Names Windows Explorer
-    acts on by itself (desktop.ini, .lnk, .url, .scf, .library-ms, …) get '.download' appended."""
-    return _guard(lambda: {"path": m().download(fileurl, dest_dir, root=DOWNLOAD_ROOT)})
+    acts on by itself (desktop.ini, .lnk, .url, .scf, .library-ms, …) get '.download' appended.
+    Downloads are deleted automatically after a few days (MOODLE_MCP_DOWNLOAD_DAYS, default 7) unless the user
+    edits or moves them; mention that when you give the user the path."""
+    def run():
+        path = m().download(fileurl, dest_dir, root=DOWNLOAD_ROOT)
+        downloads.record(path)
+        downloads.maybe_cleanup()
+        days = downloads.retention_days()
+        return {"path": path, "auto_delete_after_days": days or None}
+    return _guard(run)
 
 
 @mcp.tool(annotations=READ)
@@ -296,6 +305,7 @@ def main(argv: list[str] | None = None) -> None:
     a = p.parse_args(argv)
     global _allow_writes
     _allow_writes = a.allow_writes
+    downloads.maybe_cleanup()
     if a.http:
         serve_http(a.port, a.path, no_auth=a.no_auth)
     else:
