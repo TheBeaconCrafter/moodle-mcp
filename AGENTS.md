@@ -21,6 +21,8 @@ A Python package that exposes a student's Moodle account as MCP tools (stdio), p
 
 - Never print, log, commit or hard-code a token. Config lives in `~/.config/moodle-mcp/config.json`.
 - Any tool that writes to Moodle gets `readOnlyHint=False, destructiveHint=True`, and its docstring tells the model to show the user the exact content and get a yes first.
+- The server is read-only by default. A tool that writes to Moodle must call `_require_writes(...)` first, so it only works when the server runs with `--allow-writes` or `MOODLE_MCP_ALLOW_WRITES=1`.
+- This is a public repo. If you test against a real Moodle site, keep what you saw out of the repo: no site URLs, course names or ids, user names, file names or response samples in code, tests, docs or commit messages. Write fixes and tests from Moodle's documented API with made-up data (`moodle.example.edu`, `CHEM 111`).
 - File URLs must stay same-origin with the configured site before a token is attached; local paths from the model (downloads, uploads) must be confined and checked. `tests/test_security.py` covers these.
 - Keep it cross-platform (macOS, Windows, Linux): no `%-d` style strftime codes and no shell-outs.
 - The user restarts their Claude session to pick up server changes. An editable install (`uv tool install --force --editable .`) makes the commands run this checkout.
