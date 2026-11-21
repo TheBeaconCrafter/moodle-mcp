@@ -144,13 +144,33 @@ def parse_token(raw: str) -> str:
 class _TextExtractor(HTMLParser):
     BLOCK = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "table", "ul", "ol", "section"}
 
+    SKIP = {"script", "style", "template"}
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+
     def __init__(self):
         super().__init__()
         self.out: list[str] = []
         self.skip = 0
+        # Content a browser wouldn't show (hidden attribute, display:none) is dropped, so text hidden from the
+        # student on the page can't reach the model either. Tracks one hidden element and its nesting depth.
+        self.hidden_tag: str | None = None
+        self.hidden_depth = 0
+
+    @staticmethod
+    def _is_hidden(attrs) -> bool:
+        a = {k.lower(): (v or "") for k, v in attrs}
+        style = re.sub(r"\s+", "", a.get("style", "").lower())
+        return "hidden" in a or "display:none" in style or "visibility:hidden" in style
 
     def handle_starttag(self, tag, attrs):
-        if tag in ("script", "style"):
+        if self.hidden_tag is not None:
+            if tag == self.hidden_tag:
+                self.hidden_depth += 1
+            return
+        if tag not in self.VOID and self._is_hidden(attrs):
+            self.hidden_tag, self.hidden_depth = tag, 1
+            return
+        if tag in self.SKIP:
             self.skip += 1
         elif tag == "li":
             self.out.append("\n- ")
@@ -164,8 +184,14 @@ class _TextExtractor(HTMLParser):
             self.out.append(" | ")
 
     def handle_endtag(self, tag):
-        if tag in ("script", "style"):
-            self.skip -= 1
+        if self.hidden_tag is not None:
+            if tag == self.hidden_tag:
+                self.hidden_depth -= 1
+                if self.hidden_depth == 0:
+                    self.hidden_tag = None
+            return
+        if tag in self.SKIP:
+            self.skip = max(0, self.skip - 1)  # a stray </script> must not turn skipping back on for good
         elif tag == "a" and getattr(self, "_href", None):
             self.out.append(f" <{self._href}>")
             self._href = None
@@ -173,7 +199,7 @@ class _TextExtractor(HTMLParser):
             self.out.append("\n")
 
     def handle_data(self, data):
-        if not self.skip:
+        if not self.skip and self.hidden_tag is None:
             self.out.append(data)
 
 
@@ -182,6 +208,7 @@ def html_to_text(html: str | None) -> str:
         return ""
     p = _TextExtractor()
     p.feed(html)
+    p.close()
     text = "".join(p.out).replace("\xa0", " ")
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
