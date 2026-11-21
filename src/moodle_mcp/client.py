@@ -11,20 +11,28 @@ import base64
 import html
 import io
 import json
+import logging
 import os
 import re
 import time
 import zipfile
+from contextlib import closing
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
 
 DEFAULT_URL = "https://moodle.trincoll.edu"
 CONFIG_PATH = Path(os.environ.get("MOODLE_MCP_CONFIG", "~/.config/moodle-mcp/config.json")).expanduser()
+MAX_FILE_REDIRECTS = 5
+
+# httpx logs every request URL at INFO, and file downloads carry the token in the query string.
+# FastMCP turns INFO logging on, so keep these loggers quiet.
+for _name in ("httpx", "httpcore"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 
 class MoodleError(RuntimeError):
@@ -158,7 +166,8 @@ class Moodle:
             raise MoodleError(
                 "No Moodle token configured. Run `moodle auth` in a terminal to add one.", "notoken"
             )
-        self.http = httpx.Client(timeout=60, follow_redirects=True,
+        # No automatic redirects: a redirected POST would replay wstoken to wherever Location points.
+        self.http = httpx.Client(timeout=60, follow_redirects=False,
                                  headers={"User-Agent": "moodle-mcp/0.1 (MoodleMobile)"})
         self._me: dict | None = None
 
@@ -168,6 +177,9 @@ class Moodle:
         _flatten("", params, data)
         data.update(wstoken=self.token, wsfunction=wsfunction, moodlewsrestformat="json")
         r = self.http.post(f"{self.url}/webservice/rest/server.php", data=data)
+        if r.is_redirect:
+            raise MoodleError(f"{wsfunction}: Moodle answered with a redirect (HTTP {r.status_code}). "
+                              "Check the site URL (https, www, sub-path).", "redirect")
         r.raise_for_status()
         out = r.json() if r.content else None
         if isinstance(out, dict) and "exception" in out:
@@ -495,21 +507,59 @@ class Moodle:
         return [n for n in out if not n["read"]] if unread_only else out
 
     # -- files ------------------------------------------------------------
+    def _same_origin(self, url: str) -> bool:
+        """True when `url` has exactly the configured site's scheme and host[:port], with no user@ part."""
+        site, u = urlparse(self.url), urlparse(url)
+        return (bool(u.scheme) and bool(u.netloc) and "@" not in u.netloc
+                and u.scheme.lower() == site.scheme.lower() and u.netloc.lower() == site.netloc.lower())
+
     def _file_url(self, fileurl: str) -> str:
-        if "/webservice/pluginfile.php" not in fileurl and "/pluginfile.php" in fileurl:
-            fileurl = fileurl.replace("/pluginfile.php", "/webservice/pluginfile.php", 1)
-        sep = "&" if "?" in fileurl else "?"
-        return f"{fileurl}{sep}token={self.token}"
+        """The token-bearing download URL for a Moodle `fileurl`, after checking it belongs to this site.
+
+        Only pluginfile.php URLs on the configured site get the token; anything else could hand it to a
+        third party (a file URL can come from a teacher-written page or a forum post)."""
+        u = urlparse(fileurl.strip())
+        if not self._same_origin(fileurl.strip()):
+            raise MoodleError("Refusing to fetch a file from outside your Moodle site. "
+                              "Pass a fileurl returned by another moodle_* tool.", "badfileurl")
+        if "/pluginfile.php/" not in u.path:
+            raise MoodleError("That is not a Moodle file URL (expected …/pluginfile.php/…).", "badfileurl")
+        path = u.path
+        if "/webservice/pluginfile.php/" not in path:
+            path = path.replace("/pluginfile.php/", "/webservice/pluginfile.php/", 1)
+        query = [(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True) if k not in ("token", "wstoken")]
+        query.append(("token", self.token))
+        return urlunparse((u.scheme, u.netloc, path, u.params, urlencode(query), ""))
+
+    def _open_file(self, fileurl: str) -> httpx.Response:
+        """GET a Moodle file as a streamed response (wrap it in `closing()`).
+
+        Redirects are followed by hand, at most MAX_FILE_REDIRECTS times and only within the same site."""
+        url = self._file_url(fileurl)
+        for _ in range(MAX_FILE_REDIRECTS + 1):
+            r = self.http.send(self.http.build_request("GET", url), stream=True)
+            if r.is_redirect:
+                location = r.headers.get("location", "")
+                r.close()
+                url = urljoin(url, location)
+                if not self._same_origin(url):
+                    raise MoodleError("The file download redirected to another site; not following it.", "redirect")
+                continue
+            if r.status_code >= 400:
+                r.close()
+                raise MoodleError(f"File download failed (HTTP {r.status_code}).", "httperror")
+            return r
+        raise MoodleError("The file download redirected too many times.", "redirect")
 
     def fetch_file(self, fileurl: str) -> tuple[bytes, str, str]:
-        r = self.http.get(self._file_url(fileurl))
-        r.raise_for_status()
-        ctype = r.headers.get("content-type", "")
-        if "application/json" in ctype and r.content[:1] == b"{":
-            err = r.json()
+        with closing(self._open_file(fileurl)) as r:
+            data = r.read()
+            ctype = r.headers.get("content-type", "")
+        if "application/json" in ctype and data[:1] == b"{":
+            err = json.loads(data)
             raise MoodleError(err.get("error") or err.get("message") or "File download failed", err.get("errorcode"))
         name = unquote(Path(urlparse(fileurl).path).name)
-        return r.content, ctype, name
+        return data, ctype, name
 
     def download(self, fileurl: str, dest: str = "~/Downloads/Moodle") -> str:
         data, _, name = self.fetch_file(fileurl)
