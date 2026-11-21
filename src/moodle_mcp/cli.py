@@ -48,6 +48,17 @@ on Windows it lives in your profile folder).
 """
 
 
+def store_sign_in(url: str, token: str, username: str | None = None, remember: bool = False) -> None:
+    """Save a checked token (and, with remember, the account whose password was remembered) under the
+    config lock, forgetting the password of a different account saved before."""
+    extra = {"username": username, "remember": True} if remember and username else {}
+    with config_lock():
+        old = load_config()
+        if old.get("username") and old.get("username") != extra.get("username"):
+            forget_password(old.get("url", url), old["username"])
+        save_config({"url": url, "token": token, "saved_at": int(time.time()), **extra})
+
+
 def cmd_auth(args) -> None:
     cfg = load_config()
     try:
@@ -98,11 +109,7 @@ def cmd_auth(args) -> None:
     except Exception as e:
         sys.exit(redact(f"✗ Couldn't check that token: {type(e).__name__}: {e}", token))
     try:
-        with config_lock():
-            old = load_config()
-            if old.get("username") and old.get("username") != extra.get("username"):
-                forget_password(old.get("url", url), old["username"])
-            save_config({"url": url, "token": token, "saved_at": int(time.time()), **extra})
+        store_sign_in(url, token, **extra)
     except MoodleError as e:
         sys.exit(f"✗ {e}")
     print(f"✓ Signed in as {who['fullname']} ({who['username']}) on {who['site']}. "
@@ -217,6 +224,7 @@ def main() -> None:
                    help="with --password: keep the password in the system keychain so the token renews itself")
     sub.add_parser("logout", parents=[common], help="delete the saved token (and any remembered password) from this computer")
     sub.add_parser("status", parents=[common], help="check the saved sign-in still works; exits 1 if not")
+    sub.add_parser("quickstart", help="guided setup: sign in and connect ChatGPT through OpenAI's tunnel")
     sub.add_parser("whoami", parents=[common], help="check the connection")
     s = sub.add_parser("functions", parents=[common], help="list the web-service functions your token can call")
     s.add_argument("match", nargs="?", help="only names containing this text")
@@ -251,6 +259,9 @@ def main() -> None:
         return cmd_auth(args)
     if args.cmd == "logout":
         return cmd_logout(args)
+    if args.cmd == "quickstart":
+        from .quickstart import main as quickstart_main
+        return quickstart_main()
     if args.cmd == "status":
         return cmd_status(args)
     c = None
