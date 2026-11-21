@@ -155,7 +155,9 @@ def moodle_submit_assignment(assign_id: int, text_html: str | None = None, file_
                              submit_for_grading: bool = False) -> Any:
     """Save the user's submission for an assignment: online text (HTML) and/or local files. This REPLACES the
     current submission's text/files. Leaves it as a draft unless submit_for_grading=true, which finalises it
-    (and accepts the submission statement). Only call after the user has approved the exact content."""
+    (and accepts the submission statement). Only call after the user has approved the exact content.
+    file_paths must be files the user named, inside their home folder (or MOODLE_MCP_UPLOAD_DIRS), at most 100 MB
+    each; hidden files/folders (names starting with '.') and the moodle-mcp config are refused."""
     return _guard(lambda: m().save_submission(assign_id, text_html, file_paths, submit_for_grading))
 
 

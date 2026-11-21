@@ -229,3 +229,92 @@ def test_download_reports_moodle_json_errors(fake_moodle, tmp_path):
         c.download(FILE, str(tmp_path))
     assert e.value.code == "nopermissions"
     assert list(tmp_path.iterdir()) == []
+
+
+# ---------------------------------------------------------------- uploads
+
+
+@pytest.fixture
+def upload_root(tmp_path, monkeypatch):
+    root = tmp_path / "home"
+    root.mkdir()
+    monkeypatch.setenv("MOODLE_MCP_UPLOAD_DIRS", str(root))
+    return root
+
+
+def test_upload_accepts_a_normal_file(upload_root):
+    f = upload_root / "essays" / "essay.docx"
+    f.parent.mkdir()
+    f.write_bytes(b"x")
+    assert mc.check_upload_path(str(f)) == f.resolve()
+
+
+@pytest.mark.parametrize("rel", [".ssh/id_rsa", ".env", "proj/.config/secret.txt", "proj/.git/config"])
+def test_upload_refuses_hidden_files_and_folders(upload_root, rel):
+    f = upload_root / rel
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b"secret")
+    with pytest.raises(mc.MoodleError) as e:
+        mc.check_upload_path(str(f))
+    assert e.value.code == "badupload"
+
+
+def test_upload_refuses_files_outside_the_roots(upload_root, tmp_path):
+    f = tmp_path / "outside.txt"
+    f.write_bytes(b"x")
+    with pytest.raises(mc.MoodleError):
+        mc.check_upload_path(str(f))
+    with pytest.raises(mc.MoodleError):
+        mc.check_upload_path(str(upload_root / ".." / "outside.txt"))
+
+
+def test_upload_refuses_directories_missing_files_and_the_config(upload_root, monkeypatch):
+    with pytest.raises(mc.MoodleError):
+        mc.check_upload_path(str(upload_root))
+    with pytest.raises(mc.MoodleError):
+        mc.check_upload_path(str(upload_root / "nope.pdf"))
+    cfg = upload_root / "moodle.json"
+    cfg.write_text("{}")
+    monkeypatch.setattr(mc, "CONFIG_PATH", cfg)
+    with pytest.raises(mc.MoodleError) as e:
+        mc.check_upload_path(str(cfg))
+    assert "config" in str(e.value)
+
+
+def test_upload_size_cap(upload_root, monkeypatch):
+    monkeypatch.setattr(mc, "UPLOAD_MAX_BYTES", 10)
+    f = upload_root / "big.pdf"
+    f.write_bytes(b"x" * 11)
+    with pytest.raises(mc.MoodleError):
+        mc.check_upload_path(str(f))
+
+
+def test_upload_follows_symlinks_before_checking(upload_root, tmp_path):
+    secret = upload_root / ".ssh" / "id_rsa"
+    secret.parent.mkdir()
+    secret.write_bytes(b"key")
+    link = upload_root / "innocent.txt"
+    try:
+        link.symlink_to(secret)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not available")
+    with pytest.raises(mc.MoodleError):
+        mc.check_upload_path(str(link))
+
+
+def test_submission_checks_every_file_before_uploading(fake_moodle, upload_root):
+    seen = []
+    c = fake_moodle(lambda req: seen.append(req) or httpx.Response(200, json=[{"itemid": 1}]))
+    ok = upload_root / "a.pdf"
+    ok.write_bytes(b"x")
+    bad = upload_root / ".env"
+    bad.write_bytes(b"SECRET=1")
+    with pytest.raises(mc.MoodleError):
+        c.save_submission(5, file_paths=[str(ok), str(bad)])
+    assert seen == []
+
+
+def test_upload_roots_default_to_home(monkeypatch):
+    monkeypatch.delenv("MOODLE_MCP_UPLOAD_DIRS", raising=False)
+    from pathlib import Path
+    assert mc.upload_roots() == [Path.home().resolve()]

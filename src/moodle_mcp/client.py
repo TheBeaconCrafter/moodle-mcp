@@ -30,6 +30,7 @@ CONFIG_PATH = Path(os.environ.get("MOODLE_MCP_CONFIG", "~/.config/moodle-mcp/con
 MAX_FILE_REDIRECTS = 5
 DOWNLOAD_ROOT = "~/Downloads/Moodle"
 DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024  # 1 GB
+UPLOAD_MAX_BYTES = 100 * 1024 * 1024
 
 # httpx logs every request URL at INFO, and file downloads carry the token in the query string.
 # FastMCP turns INFO logging on, so keep these loggers quiet.
@@ -622,7 +623,7 @@ class Moodle:
 
     # -- writes -----------------------------------------------------------
     def upload_draft(self, path: str, itemid: int = 0) -> int:
-        p = Path(path).expanduser()
+        p = check_upload_path(path)
         with p.open("rb") as fh, self._net("file upload"):
             r = self.http.post(f"{self.url}/webservice/upload.php",
                                data={"token": self.token, "filearea": "draft", "itemid": itemid},
@@ -643,6 +644,8 @@ class Moodle:
         if text_html is not None:
             plugindata["onlinetext_editor"] = {"text": text_html, "format": 1, "itemid": 0}
         if file_paths:
+            for fp in file_paths:  # check every file before uploading any of them
+                check_upload_path(fp)
             itemid = 0
             for fp in file_paths:
                 itemid = self.upload_draft(fp, itemid)
@@ -689,6 +692,41 @@ def _dest_dir(dest: str, root: str | None) -> Path:
     if d_r != base_r and base_r not in d_r.parents:
         raise MoodleError(f"dest_dir must be inside {root} (give a subfolder name such as 'CHEM 111').", "baddest")
     return d_r
+
+
+def upload_roots() -> list[Path]:
+    """Folders submissions may upload from: MOODLE_MCP_UPLOAD_DIRS (os.pathsep-separated), else the home folder."""
+    raw = os.environ.get("MOODLE_MCP_UPLOAD_DIRS", "")
+    dirs = [d.strip() for d in raw.split(os.pathsep) if d.strip()] or [str(Path.home())]
+    return [Path(d).expanduser().resolve() for d in dirs]
+
+
+def check_upload_path(path: str) -> Path:
+    """Resolve a file the user wants to submit and refuse anything that looks like it shouldn't leave the machine.
+
+    The file must be a regular file of at most UPLOAD_MAX_BYTES inside an upload root, with no hidden
+    (dot-named) folder or file below that root, and must not be this tool's own config file."""
+    try:
+        p = Path(path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise MoodleError(f"File not found: {path}", "badupload") from None
+    if not p.is_file():
+        raise MoodleError(f"Not a regular file: {path}", "badupload")
+    if p == CONFIG_PATH.expanduser().resolve():
+        raise MoodleError("Refusing to upload the moodle-mcp config file (it holds your token).", "badupload")
+    root = next((r for r in upload_roots() if p == r or r in p.parents), None)
+    if root is None:
+        raise MoodleError(f"Refusing to upload {path}: it is outside the allowed folders "
+                          f"({', '.join(str(r) for r in upload_roots())}). Set MOODLE_MCP_UPLOAD_DIRS to change them.",
+                          "badupload")
+    if any(part.startswith(".") for part in p.relative_to(root).parts):
+        raise MoodleError(f"Refusing to upload {path}: hidden files and folders (names starting with '.') "
+                          "are off limits.", "badupload")
+    size = p.stat().st_size
+    if size > UPLOAD_MAX_BYTES:
+        raise MoodleError(f"{p.name} is {size // 2**20} MB; the upload limit is {UPLOAD_MAX_BYTES // 2**20} MB.",
+                          "badupload")
+    return p
 
 
 def _create_unique(d: Path, name: str):
