@@ -6,6 +6,7 @@ import argparse
 import getpass
 import json
 import sys
+import time
 
 from .client import (
     CONFIG_PATH,
@@ -14,9 +15,12 @@ from .client import (
     MoodleError,
     check_site_url,
     clear_config,
+    forget_password,
     load_config,
     parse_token,
+    password_login,
     redact,
+    remember_password,
     save_config,
 )
 
@@ -45,21 +49,66 @@ def cmd_auth(args) -> None:
         url = check_site_url(args.url or cfg.get("url") or DEFAULT_URL)
     except MoodleError as e:
         sys.exit(f"✗ {e}")
-    print(AUTH_HELP.format(url=url, path=CONFIG_PATH))
-    raw = getpass.getpass("Paste token or launch link (hidden): ")
-    try:
-        token = parse_token(raw)
-    except ValueError as e:
-        sys.exit(f"✗ {e}")
+    extra: dict = {}
+    if args.remember and not args.password:
+        sys.exit("✗ --remember only works with --password (a pasted token can't be renewed automatically).")
+    if args.password:
+        username = (args.username or input(f"Moodle username for {url}: ")).strip()
+        password = getpass.getpass("Moodle password (hidden): ")
+        try:
+            token = password_login(url, username, password)
+        except MoodleError as e:
+            sys.exit(redact(f"✗ {e}", password))
+        if args.remember:
+            try:
+                where = remember_password(url, username, password)
+            except MoodleError as e:
+                sys.exit(f"✗ {e}")
+            extra = {"username": username, "remember": True}
+            print(f"✓ Password saved in {where}; the token will renew itself when it expires.")
+        else:
+            forget_password(url, username)
+    else:
+        print(AUTH_HELP.format(url=url, path=CONFIG_PATH))
+        raw = getpass.getpass("Paste token or launch link (hidden): ")
+        try:
+            token = parse_token(raw)
+        except ValueError as e:
+            sys.exit(f"✗ {e}")
     try:
         who = Moodle(url=url, token=token).whoami()
     except MoodleError as e:
         sys.exit(redact(f"✗ Moodle rejected that token: {e}", token))
     except Exception as e:
         sys.exit(redact(f"✗ Couldn't check that token: {type(e).__name__}: {e}", token))
-    save_config({"url": url, "token": token})
+    old = load_config()
+    if old.get("username") and old.get("username") != extra.get("username"):
+        forget_password(old.get("url", url), old["username"])
+    save_config({"url": url, "token": token, "saved_at": int(time.time()), **extra})
     print(f"✓ Signed in as {who['fullname']} ({who['username']}) on {who['site']}. "
           f"{who['functions_available']} web-service functions available.")
+
+
+def cmd_status(args) -> None:
+    """Exit 0 if the saved token works (renewing it if it can), 1 otherwise. Good for a scheduled check."""
+    c = None
+    try:
+        c = Moodle()
+        who = c.whoami()
+    except MoodleError as e:
+        msg = redact(str(e), c.token if c else None)
+        if args.json:
+            _print({"ok": False, "error": msg, "errorcode": e.code})
+        else:
+            print(f"✗ {msg}")
+        sys.exit(1)
+    if args.json:
+        return _print({"ok": True, **who})
+    age = who.get("token_age_days")
+    print(f"✓ Signed in as {who['fullname']} on {who['site']}.")
+    print(f"  Token saved {age} days ago." if age is not None else "  Token age unknown (saved before moodle-mcp tracked it).")
+    print("  Auto-renew: on (remembered password)." if who.get("auto_renew") else
+          "  Auto-renew: off. When the token expires, run `moodle auth` again; running servers pick it up.")
 
 
 def _print(obj) -> None:
@@ -102,7 +151,13 @@ def main() -> None:
 
     a = sub.add_parser("auth", help="save your Moodle token")
     a.add_argument("--url", help=f"Moodle site (default {DEFAULT_URL})")
-    sub.add_parser("logout", help="delete the saved token from this computer")
+    a.add_argument("--password", action="store_true",
+                   help="sign in with your Moodle username and password instead of a token (sites without SSO)")
+    a.add_argument("--username", help="username for --password (asked for if left out)")
+    a.add_argument("--remember", action="store_true",
+                   help="with --password: keep the password in the system keychain so the token renews itself")
+    sub.add_parser("logout", help="delete the saved token (and any remembered password) from this computer")
+    sub.add_parser("status", help="check the saved sign-in still works; exits 1 if not")
     sub.add_parser("whoami", help="check the connection")
     s = sub.add_parser("functions", help="list the web-service functions your token can call")
     s.add_argument("match", nargs="?", help="only names containing this text")
@@ -136,8 +191,13 @@ def main() -> None:
     if args.cmd == "auth":
         return cmd_auth(args)
     if args.cmd == "logout":
+        old = load_config()
+        if old.get("username"):
+            forget_password(old["url"], old["username"])
         print(f"✓ Removed {CONFIG_PATH}" if clear_config() else "No saved token to remove.")
         return
+    if args.cmd == "status":
+        return cmd_status(args)
     c = None
     try:
         c = Moodle()

@@ -124,6 +124,99 @@ def save_config(cfg: dict) -> None:
         raise
 
 
+# ---------------------------------------------------------------- staying signed in
+#
+# Moodle tokens can expire (sites often set a few months). Two things keep a long-running server working:
+#  1. When Moodle says the token is invalid, the client re-reads the config file, so running `moodle auth`
+#     in a terminal fixes a running server without a restart.
+#  2. On sites with a Moodle password (not SSO), `moodle auth --password --remember` keeps the password in
+#     the OS keychain (or a file named by MOODLE_MCP_PASSWORD_FILE) and the client fetches a fresh token itself.
+
+KEYRING_SERVICE = "moodle-mcp"
+TOKEN_ERRORS = {"invalidtoken", "accessexception"}
+
+
+def _keyring():
+    try:
+        import keyring  # optional extra: moodle-mcp[keyring]
+    except ImportError:
+        return None
+    return keyring
+
+
+def _keyring_user(url: str, username: str) -> str:
+    return f"{url.rstrip('/').lower()}|{username}"
+
+
+def remember_password(url: str, username: str, password: str) -> str:
+    """Store the password in the OS keychain. Returns where it went, or raises MoodleError.
+
+    With MOODLE_MCP_PASSWORD_FILE set, the user keeps the password in that file themselves, so nothing is stored."""
+    if os.environ.get("MOODLE_MCP_PASSWORD_FILE", "").strip():
+        return "MOODLE_MCP_PASSWORD_FILE (not copied anywhere)"
+    kr = _keyring()
+    if kr is None:
+        raise MoodleError("Remembering a password needs the `keyring` package. Reinstall with the extra: "
+                          "uv tool install --force \"moodle-mcp[keyring] @ git+https://github.com/TheBeaconCrafter/"
+                          "moodle-mcp\", or point MOODLE_MCP_PASSWORD_FILE at a file only you can read.", "nokeyring")
+    try:
+        kr.set_password(KEYRING_SERVICE, _keyring_user(url, username), password)
+    except Exception as e:
+        raise MoodleError(f"Couldn't save the password to the system keychain ({type(e).__name__}). On a headless "
+                          "machine, use MOODLE_MCP_PASSWORD_FILE instead.", "nokeyring") from None
+    return "the system keychain"
+
+
+def recall_password(url: str, username: str) -> str | None:
+    """The remembered password: MOODLE_MCP_PASSWORD_FILE first (handy for systemd credentials), then the keychain."""
+    path = os.environ.get("MOODLE_MCP_PASSWORD_FILE", "").strip()
+    if path:
+        try:
+            return Path(path).expanduser().read_text(encoding="utf-8").strip() or None
+        except OSError:
+            return None
+    kr = _keyring()
+    if kr is None:
+        return None
+    try:
+        return kr.get_password(KEYRING_SERVICE, _keyring_user(url, username))
+    except Exception:
+        return None
+
+
+def forget_password(url: str, username: str) -> None:
+    kr = _keyring()
+    if kr is not None:
+        try:
+            kr.delete_password(KEYRING_SERVICE, _keyring_user(url, username))
+        except Exception:
+            pass
+
+
+def password_login(url: str, username: str, password: str, http: httpx.Client | None = None) -> str:
+    """Trade a Moodle username/password for a mobile-app token via login/token.php (sites without SSO only)."""
+    url = check_site_url(url)
+    own = http is None
+    http = http or httpx.Client(timeout=httpx.Timeout(connect=10, read=60, write=60, pool=10), follow_redirects=False,
+                                headers={"User-Agent": "moodle-mcp/0.1 (MoodleMobile)"})
+    try:
+        r = http.post(f"{url}/login/token.php",
+                      data={"username": username, "password": password, "service": "moodle_mobile_app"})
+        out = r.json() if r.status_code < 400 and r.content else None
+    except (httpx.HTTPError, ValueError) as e:
+        raise MoodleError(redact(f"Password sign-in failed: {type(e).__name__}", password), "network") from None
+    finally:
+        if own:
+            http.close()
+    if not isinstance(out, dict):
+        raise MoodleError(f"Password sign-in failed (HTTP {r.status_code}). Does this site use single sign-on?",
+                          "loginfailed")
+    if not out.get("token"):
+        msg = redact(str(out.get("error") or "Moodle refused the sign-in"), password)
+        raise MoodleError(f"Password sign-in failed: {msg}", out.get("errorcode") or "loginfailed")
+    return str(out["token"])
+
+
 def parse_token(raw: str) -> str:
     """Accept a bare token or the moodlemobile://token=... link the app launch page produces."""
     raw = raw.strip()
@@ -252,6 +345,8 @@ class Moodle:
         cfg = load_config()
         self.url = check_site_url(url or cfg["url"])
         self.token = token or cfg.get("token")
+        # Only a token that came from the config file may be swapped for a fresh one later.
+        self._renewable = token is None and not os.environ.get("MOODLE_TOKEN") and url is None
         if not self.token:
             raise MoodleError(
                 "No Moodle token configured. Run `moodle auth` in a terminal to add one.", "notoken"
@@ -270,7 +365,46 @@ class Moodle:
         except httpx.HTTPError as e:
             raise MoodleError(redact(f"{what}: network error ({type(e).__name__}: {e})", self.token), "network") from None
 
+    def renew_token(self) -> bool:
+        """Swap an expired token for a working one without a restart. Returns True if the token changed:
+        either the config file now holds a different token (the user ran `moodle auth`), or a remembered
+        password got a new one from login/token.php (which is then saved)."""
+        if not self._renewable:
+            return False
+        cfg = load_config()
+        if str(cfg.get("url", "")).rstrip("/").lower() != self.url.lower():
+            return False
+        if cfg.get("token") and cfg["token"] != self.token:
+            self.token, self._me = cfg["token"], None
+            return True
+        username = cfg.get("username")
+        if not (cfg.get("remember") and username):
+            return False
+        password = recall_password(self.url, username)
+        if not password:
+            return False
+        try:
+            token = password_login(self.url, username, password, self.http)
+        except MoodleError:
+            return False
+        if token == self.token:
+            return False
+        # Update the file itself (not the env-merged view) so env settings never get written to disk.
+        saved = json.loads(CONFIG_PATH.read_text()) if CONFIG_PATH.exists() else {}
+        saved.update(token=token, saved_at=int(time.time()))
+        save_config(saved)
+        self.token, self._me = token, None
+        return True
+
     def call(self, wsfunction: str, /, **params) -> Any:
+        try:
+            return self._call(wsfunction, params)
+        except MoodleError as e:
+            if e.code in TOKEN_ERRORS and self.renew_token():
+                return self._call(wsfunction, params)
+            raise
+
+    def _call(self, wsfunction: str, params: dict) -> Any:
         data: dict = {}
         _flatten("", params, data)
         data.update(wstoken=self.token, wsfunction=wsfunction, moodlewsrestformat="json")
@@ -305,7 +439,17 @@ class Moodle:
             "site": m.get("sitename"), "url": m.get("siteurl"), "release": m.get("release"),
             "userid": m.get("userid"), "username": m.get("username"), "fullname": m.get("fullname"),
             "functions_available": len(m.get("functions", [])),
+            **self.token_info(),
         }
+
+    def token_info(self) -> dict:
+        """How old the saved token is and whether it can renew itself (no secrets)."""
+        cfg = load_config() if self._renewable else {}
+        info: dict = {}
+        if cfg.get("saved_at") and cfg.get("token") == self.token:
+            info["token_age_days"] = int((time.time() - cfg["saved_at"]) // 86400)
+        info["auto_renew"] = bool(self._renewable and cfg.get("remember") and cfg.get("username"))
+        return info
 
     def has_function(self, name: str) -> bool:
         return any(f.get("name") == name for f in self.me.get("functions", []))

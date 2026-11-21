@@ -18,6 +18,9 @@ dependencies = [
     "pypdf>=6.1,<7",
 ]
 
+[project.optional-dependencies]
+keyring = ["keyring>=25,<26"]
+
 [project.urls]
 Homepage = "https://github.com/TheBeaconCrafter/moodle-mcp"
 Issues = "https://github.com/TheBeaconCrafter/moodle-mcp/issues"
